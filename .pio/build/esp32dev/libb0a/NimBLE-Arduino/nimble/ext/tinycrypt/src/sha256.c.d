@@ -1,0 +1,5 @@
+.pio/build/esp32dev/libb0a/NimBLE-Arduino/nimble/ext/tinycrypt/src/sha256.c.o: \
+ lib/NimBLE-Arduino/src/nimble/ext/tinycrypt/src/sha256.c \
+ lib/NimBLE-Arduino/src/nimble/ext/tinycrypt/src/../include/tinycrypt/sha256.h \
+ lib/NimBLE-Arduino/src/nimble/ext/tinycrypt/src/../include/tinycrypt/constants.h \
+ lib/NimBLE-Arduino/src/nimble/ext/tinycrypt/src/../include/tinycrypt/utils.h
