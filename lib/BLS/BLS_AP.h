@@ -13,8 +13,8 @@
 #define CONFIG_CHARACTERISTIC_UUID "19b10001-e8f2-537e-4f6c-d104768a1214"
 //#define LED_CHARACTERISTIC_UUID "19b10002-e8f2-537e-4f6c-d104768a1214"
 
-// extern bool use_led;
-extern bool close_settings;
+extern bool use_led;
+extern bool server_close;
 extern bool flag_callback_broker;
 extern bool configuration_updated;
 
@@ -26,9 +26,10 @@ class BLS_AP
 {
 private:
 public:
-    void close_settings();
-    void Access_Point(bool *p_estado_servidor, void Idle_Reboot_AP());
-    // void Access_Point(bool *p_estado_servidor, void Idle_Reboot_AP());
+    // void close_settings();
+    // void Access_Point(bool *p_estado_servidor);
+    void deInitBLE();
+    void Access_Point(bool *p_estado_servidor);
 };
 
 #endif

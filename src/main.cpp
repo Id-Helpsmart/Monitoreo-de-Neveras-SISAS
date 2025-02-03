@@ -61,12 +61,6 @@ estructura1 datos_recibidos_gen; // variable para almacenar datos configuración
 estructura2 datos_recibidos_sen; // variable para almacenar datos configuración de sensores
 estructura3 datos_recibidos_ala; // variable para almacenar datos niveles de alarma
 
-// IPAddress ip(192, 168, 1, 200);
-// IPAddress gateway(192, 168, 1, 1);
-// IPAddress subnet(255, 255, 255, 0);
-
-String location;
-
 const char *fileData = "/data.csv";
 const char *password = "helpmedica$";
 
@@ -77,10 +71,6 @@ const char *mqtt_server = "iotm.helpmedica.com";
 const int mqtt_port = 1885; // broker de emergencias
 
 char name_card[50];
-char timestamp[22] = "*";
-char token_de_app[301] = "*";
-char direccion_ubicacion[100] = "*";
-char data_file_name[17] = "/device-data.txt";
 
 bool use_led = false;
 bool trouble = false;
@@ -89,43 +79,34 @@ bool updating = false;
 bool emergency = false;
 bool out_of_range = false;
 bool reconnection = false;
+bool server_close = false;
 bool create_alarm = false;
-bool wifiConnected = false;
 bool taskCompleted = false;
 bool server_status = false;
 bool posted_message = false;
 bool completed_time = false;
-bool internet_status = false;
 bool message_received = false;
 bool download_firmware = false;
 bool flag_access_point = false;
-bool real_time_message = false;
 bool synchronizedTimestamp = false;
 bool flag_callback_broker = false;
-bool credentials_received = false;
 bool configuration_updated = false;
 
 long lastMsg = 0;
-long last_alar = 0;
 long lastMsgRead = 0;
 long last_alto_bajo = 0;
 long last_measurement = 0;
 long last_reconnection = 0;
 static unsigned long lastSyncTime = 0;
 
-int VALOR_1 = 1;
-int input_door = 0;
 int input_energy = 0;
-int SENSOR_TIPO_13 = 13;
-int num_de_switches = 2; // número de switches usados, hasta 256 switches
 
-float L_min_Temp = 0;
-float L_Max_Temp = 0;
 float temperature = 0;
 float battery_level = 0;
 float publish_freq_num = 5000; // frecuencia de publicación de datos de sensores (por defecto cada 5 seg para verificar lectura correcta desde SPIFFS)
 float previous_temperature = 0;
 
+String location;
 String topic_tro;
 String topic_sub;
 String topic_pub;
@@ -222,12 +203,6 @@ void setup()
     create_files();
     files_read();
 
-    // Iniciar las estructuras de datos
-    /*readData.temperature = NAN;
-    savedData._DS18B20Data.temperature = NAN;
-    strcpy(savedData._DS18B20Data.time, "*");
-    savedData.energy = 0;*/
-
     Task2_flashing_led = xTaskCreateStaticPinnedToCore(Flashing_Led, "flashing_led", STACK_FLASHING_LED, NULL, 2, stack_flashing_led, &dates_flashing_led, 0);
     TaskSensors = xTaskCreateStaticPinnedToCore(Sensors, "Sensors", STACK_SENSORS, NULL, 2, stack_sensors, &dates_sensors, 0);
     delay(500);
@@ -252,6 +227,17 @@ void loop()
 
     if (configuration_updated)
         _funciones_spiffs.process_file(doc_config);
+
+    if (flag_access_point == true && server_status == false)
+            Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
+
+    if(server_close == true)
+    {
+        Serial.println("Detener servidor BLE");
+        _BLS_AP.deInitBLE();
+        server_close = false;
+        server_status = false;
+    }
 
     if (firmware == true)
     {
@@ -497,23 +483,23 @@ void IRAM_ATTR Cod_Access_Point() // función a ejecutar cuando se presiona el b
 }
 // ###################################################################
 
-void IRAM_ATTR Idle_Reboot_AP() // función a ejecutar cuando se cumple 1 minuto de haberse presionado los botones para crear el punto de acceso si no se conecta ningún cliente
-{
-    portENTER_CRITICAL_ISR(&free_zone_timers);
-    ESP.restart();
-    portEXIT_CRITICAL_ISR(&free_zone_timers);
-}
-
 void Access_Point()
 {
-    // configuration_mode = true;
-    delay(300); // retardo para presionar la combinación de botones
-    use_led = true;
-    led_flashing_lock_time = pdMS_TO_TICKS(100); // Indicar que está abierto el punto de acceso
-    _BLS_AP.Access_Point(&server_status, Idle_Reboot_AP);
-    // Serial.println("Crear punto de configuracion");
-    server_status = true;
+    
+    unsigned long buttonPressTime = millis();
+    while (digitalRead(BOTON_COD_AZUL) == HIGH)
+    {
+        if (millis() - buttonPressTime > 2000)
+        {
+            use_led = true;
+            led_flashing_lock_time = pdMS_TO_TICKS(100); // Indicar que está abierto el punto de acceso
+            _BLS_AP.Access_Point(&server_status);
+            break;
+        }
+    }
+
     flag_access_point = false;
+
 }
 
 void Sensors(void *pvParameters)
@@ -607,17 +593,12 @@ void fcsDownloadCallback(FCS_DownloadStatusInfo info)
         Serial.printf("Downloading firmware %s (%d)\n", info.remoteFileName.c_str(), info.fileSize);
     }
     else if (info.status == fb_esp_fcs_download_status_download)
-    {
         Serial.printf("Downloaded %d%s, Elapsed time %d ms\n", (int)info.progress, "%", info.elapsedTime);
-    }
     else if (info.status == fb_esp_fcs_download_status_complete)
     {
         Serial.println("Update firmware completed.");
         Serial.println();
         Serial.println("Restarting...\n\n");
-        //delay(2000);
-        //_Sensors.Update_Notify();
-        //delay(1000);
         ESP.restart();
     }
     else if (info.status == fb_esp_fcs_download_status_error)
@@ -625,10 +606,6 @@ void fcsDownloadCallback(FCS_DownloadStatusInfo info)
         Serial.printf("Download firmware failed, %s\n", info.errorMsg.c_str());
         Serial.println("Restarting...\n\n");
         ESP.restart();
-        /* vTaskDelete(Task3_update);
-        download_firmware = false;
-        firmware = true;*/
-        // update_firmware = true;
     }
 }
 
@@ -668,9 +645,7 @@ void TaskUpdate(void *pvParameters)
             Serial.print("location : ");
             Serial.println(location);
 
-            // In ESP8266, this function will allocate 16k+ memory for internal SSL client.
-            // if (!Firebase.Storage.downloadOTA(&fbdo, STORAGE_BUCKET_ID /* Firebase Storage bucket id */, "<firmware.bin>" /* path of firmware file stored in the bucket */, fcsDownloadCallback /* callback function */))
-            // if (!Firebase.Storage.downloadOTA(&fbdo, STORAGE_BUCKET_ID, direccion_ubicacion, fcsDownloadCallback))
+
             if (!Firebase.Storage.downloadOTA(&fbdo, STORAGE_BUCKET_ID, location.c_str(), fcsDownloadCallback))
                 Serial.println(fbdo.errorReason());
         }
@@ -691,8 +666,8 @@ void Flashing_Led(void *pvParameters)
 
     while (1)
     {
-        if (flag_access_point == true && server_status == false)
-            Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
+        // if (flag_access_point == true && server_status == false)
+        //     Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
 
         // Serial.println("flashing_led");
         if (use_led == true)
@@ -704,9 +679,7 @@ void Flashing_Led(void *pvParameters)
                 digitalWrite(LED, LOW);
         }
         else
-        {
             digitalWrite(LED, LOW);
-        }
         ultimo_tiempo_ejecucion1 = xTaskGetTickCount();
         vTaskDelayUntil(&ultimo_tiempo_ejecucion1, led_flashing_lock_time);
     }
@@ -725,8 +698,8 @@ void create_files()
         File file_gen = SPIFFS.open("/general_config.txt", FILE_WRITE);
         file_gen.print("NW:HelpSmart^                                        ^\n");
         file_gen.print("CW:9001295137^                                       ^\n");
-        file_gen.print("NC:8b3g2mz8oaGc9kWRZNGF^                             ^\n");
-        file_gen.print("NA:p6Pir4XBMxhF1yhdrUIi^                             ^\n");
+        file_gen.print("NC:bp4UoGBepWdkf9eTOQWi^                             ^\n");
+        file_gen.print("NA:pW9htiruUl8TY3p45KIV^                             ^\n");
         file_gen.close();
         Serial.println("file general create");
     }

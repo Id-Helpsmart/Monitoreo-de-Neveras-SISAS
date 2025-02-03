@@ -1,16 +1,16 @@
 
 #include "BLS_AP.h"
-
-hw_timer_t *timer_zero_AP = NULL;
-
-// static NimBLEServer *pServer;
+#include "nvs_flash.h"
 
 BLEServer *pServer = NULL;
-BLECharacteristic *pSensorCharacteristic = NULL;
+hw_timer_t *timer_zero_AP = NULL;
 BLECharacteristic *pLedCharacteristic = NULL;
+BLECharacteristic *pSensorCharacteristic = NULL;
+
+uint32_t value = 0;
+
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
-uint32_t value = 0;
 
 // procesar_tramas _pt;
 
@@ -18,13 +18,17 @@ class MyServerCallbacks : public BLEServerCallbacks
 {
     void onConnect(BLEServer *pServer)
     {
+        // Serial.println("Cliente conectado");
         deviceConnected = true;
+        use_led = true;
         led_flashing_lock_time = pdMS_TO_TICKS(500); // parpadeo cuando se conectó un cliente al punto de acceso
+        timerRestart(timer_zero_AP);                 // reiniciar el timer al conectarse
         timerStop(timer_zero_AP);                    // detener el timer al conectarse
     };
 
     void onDisconnect(BLEServer *pServer)
     {
+        // Serial.println("Cliente desconectado");
         deviceConnected = false;
         led_flashing_lock_time = pdMS_TO_TICKS(100); // Cliente se desconectó
         timerStart(timer_zero_AP);                   // iniciar el timer al desconectarse
@@ -33,21 +37,6 @@ class MyServerCallbacks : public BLEServerCallbacks
 
 class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
 {
-    /*void onWrite(BLECharacteristic* pLedCharacteristic) {
-        String value = pLedCharacteristic->getValue();
-        if (value.length() > 0) {
-            Serial.print("Characteristic event, written: ");
-            Serial.println(static_cast<int>(value[0])); // Print the integer value
-
-            int receivedValue = static_cast<int>(value[0]);
-            if (receivedValue == 1) {
-                digitalWrite(ledPin, HIGH);
-            } else {
-                digitalWrite(ledPin, LOW);
-            }
-        }
-    }*/
-
     void onWrite(BLECharacteristic *pConfigCharacteristic)
     {
         std::string value = pConfigCharacteristic->getValue();
@@ -69,27 +58,66 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
             {
                 Serial.println("cg");
 
-                // _pt.tramaBluetooth(doc);
-
-                Serial.println("tramaBluetooth");
                 configuration_updated = true;
                 // flag_callback_broker = true;
             }
 
             // Set the flag to indicate configuration update
-            //configuration_updated = true;
+            // configuration_updated = true;
         }
     }
 };
 
-void BLS_AP::Access_Point(bool *p_estado_servidor, void Idle_Reboot_AP())
+void BLS_AP::deInitBLE()
 {
+    timerRestart(timer_zero_AP);
+    timerStop(timer_zero_AP);
+    Serial.println("Intentando detener el servidor BLE...");
+
+    if (pServer)
+    {
+
+        if (deviceConnected)
+        {
+            Serial.println("Aún hay un dispositivo conectado. Desconectando...");
+            pServer->disconnect(0); // Forzar desconexión del cliente
+            delay(500);             // Espera un poco para asegurar que la desconexión se procesa
+        }
+
+        Serial.println("Deteniendo servidor Bluetooth...");
+        BLEDevice::stopAdvertising(); // Detiene la publicidad BLE
+        delay(100);
+        BLEDevice::deinit(); // Apaga el stack BLE
+        pServer = nullptr;
+        Serial.println("Servidor BLE detenido con éxito.");
+        ESP.restart();
+    }
+}
+
+void IRAM_ATTR flagClose()
+{
+    Serial.println("Timer finalizado");
+    // ESP.restart();
+    server_close = true;
+}
+
+// void BLS_AP::Access_Point(bool *p_estado_servidor, void Idle_Reboot_AP())
+void BLS_AP::Access_Point(bool *p_estado_servidor)
+{
+
+    if (timer_zero_AP == NULL)
+    {
+        timer_zero_AP = timerBegin(0, 80, true);
+        timerAttachInterrupt(timer_zero_AP, flagClose, true);
+        timerAlarmWrite(timer_zero_AP, 1000000 * 120, true); // reinicio del esp32 después de 2 minutos de abierto el punto de acceso
+        timerAlarmEnable(timer_zero_AP); // inicio del timer que limita el tiempo en que permanecerá activo el punto de acceso para configurar el ESP32
+    }
+    else
+        timerStart(timer_zero_AP), Serial.println("Timer iniciado");
+
     Serial.println("Inicio servidor bluetooth");
 
-    timer_zero_AP = timerBegin(0, 80, true);
-    timerAttachInterrupt(timer_zero_AP, Idle_Reboot_AP, true);
-    timerAlarmWrite(timer_zero_AP, 1000000 * 120, true); // reinicio del esp32 después de 2 minutos de abierto el punto de acceso
-    timerAlarmEnable(timer_zero_AP);                     // inicio del timer que limita el tiempo en que permanecerá activo el punto de acceso para configurar el ESP32
+    *p_estado_servidor = true;
 
     // Create the BLE Device
     BLEDevice::init("HelpSmart");
@@ -100,20 +128,6 @@ void BLS_AP::Access_Point(bool *p_estado_servidor, void Idle_Reboot_AP())
 
     // Create the BLE Service
     BLEService *pService = pServer->createService(SERVICE_UUID);
-
-    // Create a BLE Characteristic
-    /*pSensorCharacteristic = pService->createCharacteristic(
-        SENSOR_CHARACTERISTIC_UUID,
-        BLECharacteristic::PROPERTY_READ |
-            BLECharacteristic::PROPERTY_WRITE |
-            BLECharacteristic::PROPERTY_NOTIFY |
-            BLECharacteristic::PROPERTY_INDICATE);*/
-
-    // Create the ON button Characteristic
-    /*pLedCharacteristic = pService->createCharacteristic(
-                                            LED_CHARACTERISTIC_UUID,
-                                            BLECharacteristic::PROPERTY_WRITE
-                                        );*/
 
     // Create the configuration JSON Characteristic
     BLECharacteristic *pConfigCharacteristic = pService->createCharacteristic(
@@ -127,12 +141,6 @@ void BLS_AP::Access_Point(bool *p_estado_servidor, void Idle_Reboot_AP())
     pConfigCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
 
     // Register the callback for the ON button characteristic
-    // pLedCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
-    // pConfigCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
-
-    // Create a BLE Descriptor
-    // pSensorCharacteristic->addDescriptor(new BLE2902());
-    // pLedCharacteristic->addDescriptor(new BLE2902());
     pConfigCharacteristic->addDescriptor(new BLE2902());
 
     // Start the service
