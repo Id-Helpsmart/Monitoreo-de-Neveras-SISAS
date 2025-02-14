@@ -88,8 +88,9 @@ bool completed_time = false;
 bool message_received = false;
 bool download_firmware = false;
 bool flag_access_point = false;
-bool synchronizedTimestamp = false;
 bool flag_callback_broker = false;
+bool firstMessageToPublish = true;
+bool synchronizedTimestamp = false;
 bool configuration_updated = false;
 
 long lastMsg = 0;
@@ -189,7 +190,7 @@ void setup()
     pinMode(BOTON_COD_AZUL, INPUT_PULLDOWN);
     attachInterrupt(digitalPinToInterrupt(BOTON_COD_AZUL), Cod_Access_Point, RISING); // LOW/HIGH/FALLING/RISING/CHANGE
     Serial.begin(115200);
-    Serial.println("Version Bluetooth + OTA 06-02-2024"); // Iniciar la comunicaión serial en 115200 baudios                                                        // Iniciar la comunicaión serial en 115200 baudios
+    Serial.println("Version Bluetooth + OTA 13-02-2025"); // Iniciar la comunicaión serial en 115200 baudios                                                        // Iniciar la comunicaión serial en 115200 baudios
 
     digitalWrite(BUZZER, LOW);
     lastSyncTime = millis();
@@ -233,7 +234,6 @@ void loop()
 
     if(server_close == true)
     {
-        Serial.println("Detener servidor BLE");
         _BLS_AP.deInitBLE();
         server_close = false;
         server_status = false;
@@ -241,8 +241,6 @@ void loop()
 
     if (firmware == true)
     {
-        Serial.println("Crear tarea de firmware");
-        // update_firmware = false;
         firmware = false;
         updating = true;
         Task3_update = xTaskCreateStaticPinnedToCore(TaskUpdate, "update", STACK_UPDATE, NULL, 3, stack_update, &dates_update, 1);
@@ -286,12 +284,19 @@ void loop()
     long now = millis();
     if (now - lastMsg > publish_freq_num || emergency == true)
     {
+        
         if (!isStructNull(readData))
-            if (previous_temperature != readData.temperature)
+        {
+            if (previous_temperature != readData.temperature || emergency)
                 completed_time = true, previous_temperature = readData.temperature;
+            else
+                Serial.println("Datos iguales");
+        }
+        else
+            Serial.println("Datos nulos");
 
         if (emergency)
-            emergency = false;
+            emergency = false, Serial.println("Emergencia");
         else
             lastMsg = now;
     }
@@ -320,16 +325,18 @@ void loop()
                 {
                     // createJsonTrouble();
                     if (client_mqtt.publish(topic_tro.c_str(), createJsonTrouble().c_str()) == true)
-                        Serial.println("Mensaje de problema publicado"), trouble = false;
+                        Serial.println("Error publish"), trouble = false;
                     else
                         Serial.println("El mensaje de problema no se pudo enviar");
                 }
 
-                if (completed_time)
+                if (completed_time || firstMessageToPublish)
                 {
+                    if(firstMessageToPublish)
+                        firstMessageToPublish = false;
 
                     if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(true).c_str()) == true)
-                        Serial.println("Mensaje publicado");
+                        Serial.println("Publish");
                     else
                         _funciones_spiffs.save_data(_timestamp.getTime(), &readData, input_energy);
                     //_funciones_spiffs.Almacenar_registro_sensores(_timestamp.getTime(), &readData, input_energy);
@@ -338,12 +345,10 @@ void loop()
                 }
                 if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 5000)
                 {
-                    Serial.println("Archivo existe, Publicar mensaje guardado");
+                    //Serial.println("Archivo existe, Publicar mensaje guardado");
 
                     if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(false).c_str()) == true)
-                        Serial.println("Mensaje Guardado publicado"), _funciones_spiffs.delete_first_data();
-                    else
-                        Serial.println("El dato guardado no se pudo enviar");
+                        _funciones_spiffs.delete_first_data();
                     lastMsgRead = millis();
                 }
             }
@@ -352,7 +357,6 @@ void loop()
         {
             if (completed_time)
             {
-                Serial.println("No hay conexión a internet, guardar el dato");
                 _funciones_spiffs.save_data(_timestamp.getTime(), &readData, input_energy);
                 completed_time = false;
             }
@@ -371,6 +375,8 @@ String createJsonSensor(bool is_real_time)
 
     if (is_real_time == false)
         _funciones_spiffs.read_data(&savedData);
+    
+    // Serial.println(savedData.energy);
 
     JsonDocument doc;
     doc["empresa"] = company_name;
@@ -616,7 +622,7 @@ void TaskUpdate(void *pvParameters)
     esp_task_wdt_init(WDT_TIMEOUT, false); // habilita el pánico para que ESP32 se reinicie
     esp_task_wdt_add(NULL);                // agregar hilo actual al reloj WDT
 
-    Serial.printf("Firebase Client v%s\n\n", FIREBASE_CLIENT_VERSION);
+    // Serial.printf("Firebase Client v%s\n\n", FIREBASE_CLIENT_VERSION);
     /* Assign the api key (required) */
     config.api_key = API_KEY;
 
@@ -641,9 +647,6 @@ void TaskUpdate(void *pvParameters)
             // see Metadata.ino example
 
             Serial.println("\nDownload firmware file...\n");
-
-            Serial.print("location : ");
-            Serial.println(location);
 
 
             if (!Firebase.Storage.downloadOTA(&fbdo, STORAGE_BUCKET_ID, location.c_str(), fcsDownloadCallback))
@@ -698,8 +701,8 @@ void create_files()
         File file_gen = SPIFFS.open("/general_config.txt", FILE_WRITE);
         file_gen.print("NW:HelpSmart^                                        ^\n");
         file_gen.print("CW:9001295137^                                       ^\n");
-        file_gen.print("NC:bp4UoGBepWdkf9eTOQWi^                             ^\n");
-        file_gen.print("NA:pW9htiruUl8TY3p45KIV^                             ^\n");
+        file_gen.print("NC:rAKiQgBfJ1x5HFjpLZck^                             ^\n");
+        file_gen.print("NA:T98DK7KlZsFzAYhU5uh1^                             ^\n");
         file_gen.close();
         Serial.println("file general create");
     }
@@ -715,7 +718,7 @@ void create_files()
     if (!SPIFFS.exists("/frequency.txt"))
     {
         File file_sen = SPIFFS.open("/frequency.txt", FILE_WRITE);
-        file_sen.print("1^^^^^^\n"); // 1 minuto por defecto
+        file_sen.print("10^^^^^\n"); // 1 minuto por defecto
         // file_sen.print("10^^^^^\n"); // 10 minutos por defecto
         file_sen.close();
         Serial.println("file frequency create");
@@ -739,7 +742,7 @@ void create_files()
         if (!SPIFFS.exists(fileName))
         {
             File calFile = SPIFFS.open(fileName, FILE_WRITE);
-            calFile.printf("1.0,50.0,100.0,1.0,50.0,100.0^^^^^^^^^^^^^^^^^^^^^\n");
+            calFile.printf("50.8,68.8,88.0,50.8,68.8,88.0^^^^^^^^^^^^^^^^^^^^^\n");
             calFile.close();
             Serial.println("file " + fileName + " create");
         }

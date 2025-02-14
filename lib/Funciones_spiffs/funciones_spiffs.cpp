@@ -72,16 +72,6 @@ void funciones_spiffs::save_general_settings(JsonDocument json)
     const char *companyId = config["company_id"];
     const char *fsId = config["fs_id"];
 
-    // Imprime los valores obtenidos
-    Serial.print("SSID: ");
-    Serial.println(ssid);
-    Serial.print("Contraseña: ");
-    Serial.println(password);
-    Serial.print("ID de la empresa: ");
-    Serial.println(companyId);
-    Serial.print("ID del piso: ");
-    Serial.println(fsId);
-
     File file_gen_save = SPIFFS.open("/general_config.txt", "r+");
 
     if (strcmp(ssid, "*") != 0)
@@ -131,7 +121,7 @@ void funciones_spiffs::save_frequency(JsonDocument json)
 
     // strcpy(publish_freq, json["value"]);
 
-    Serial.println(publish_freq);
+    // Serial.println(publish_freq);
 
     File file_sen_save = SPIFFS.open("/frequency.txt", "r+"); // crea un archivo de texto llamado credenciales, que almacenará todos los datos que reciba de la aplicación. la "r+" permite leer y escribir datos en posiciones específicas mediante el método seek()
     // file_sen_save.seek(3, SeekSet);
@@ -146,10 +136,7 @@ void funciones_spiffs::save_alarm_limits(JsonDocument json)
 {
     // Verificar si el JSON contiene el arreglo "limites"
     if (!json["limites"].is<JsonArray>())
-    {
-        Serial.println("El JSON no contiene el arreglo 'limites'");
         return;
-    }
 
     // Obtener el arreglo "limites" del JSON
     JsonArray limites = json["limites"].as<JsonArray>();
@@ -167,26 +154,19 @@ void funciones_spiffs::save_alarm_limits(JsonDocument json)
         // Verificar si el archivo ya existe
         if (SPIFFS.exists(fileName))
         {
-            Serial.println("El archivo ya existe, se sobrescribirá");
+            // Serial.println("El archivo ya existe, se sobrescribirá");
 
             // Guardar cada límite en un archivo en SPIFFS
             File file = SPIFFS.open(fileName, FILE_WRITE);
             if (!file)
-            {
-                Serial.println("Error al abrir el archivo para escribir");
                 continue;
-            }
 
             file.printf("L:%d,%d^", min, max);
             file.close();
         }
-        else
-        {
-            Serial.println("El archivo no existe, no se guardará");
-        }
     }
 
-    Serial.println("Límites de alarma guardados correctamente");
+    // Serial.println("Límites de alarma guardados correctamente");
 
     flag_callback_broker = true;
 
@@ -248,7 +228,7 @@ void funciones_spiffs::save_calibration_points(JsonDocument json)
 
     if (calibration["type"])
     {
-        Serial.println("type encontrado");
+        // Serial.println("type encontrado");
 
         // const char *type = calibration["type"];
         String type = calibration["type"];
@@ -267,11 +247,11 @@ void funciones_spiffs::save_calibration_points(JsonDocument json)
         strcat(name_file, type.c_str());
         strcat(name_file, ".txt");
 
-        Serial.println(name_file);
+        // Serial.println(name_file);
 
         if (SPIFFS.exists(name_file)) // Verificar si hay un archivo con ese nombre
         {
-            Serial.println("Archivo encontrado, guardar");
+            // Serial.println("Archivo encontrado, guardar");
             File file_cal_save = SPIFFS.open(name_file, "r+");
             file_cal_save.printf("%.1f,", value1); // Guardar máximo 1 decimal flotante
             file_cal_save.printf("%.1f,", value2);
@@ -284,14 +264,14 @@ void funciones_spiffs::save_calibration_points(JsonDocument json)
             ESP.restart();
             // flag_callback_broker = true;
         }
-        else
-            Serial.println("El archivo no existe");
+        // else
+        //     Serial.println("El archivo no existe");
     }
 }
 
 bool funciones_spiffs::read_data(DS18B20Saved *_DS18B20Saved)
 {
-    Serial.println("Reading data");
+    // Serial.println("Reading data");
     String data;
     if (SPIFFS.exists(fileData))
     {
@@ -299,11 +279,13 @@ bool funciones_spiffs::read_data(DS18B20Saved *_DS18B20Saved)
         if (!dataSaved.empty())
         {
             data = dataSaved.front();
-            Serial.println(data);
+            // Serial.println(data);
             sscanf(data.c_str(), "%21[^,],%f,%f",
                    _DS18B20Saved->_DS18B20Data.time,
                    &_DS18B20Saved->_DS18B20Data.temperature,
                    &_DS18B20Saved->energy);
+            if(_DS18B20Saved->energy > 1)
+                _DS18B20Saved->energy = 1;
             return true;
         }
         else
@@ -323,10 +305,7 @@ bool funciones_spiffs::saveAlertWithTimestamp(const char *timestamp, const char 
     // Serial.println(fileName);
     File file = SPIFFS.open(fileName, FILE_READ);
     if (!file)
-    {
-        Serial.println("Error al abrir el archivo para leer");
         return false;
-    }
 
     String lastTimestamp;
     while (file.available())
@@ -347,18 +326,12 @@ bool funciones_spiffs::saveAlertWithTimestamp(const char *timestamp, const char 
 
         double secondsDiff = difftime(currentTimeEpoch, lastTimeEpoch);
         if (secondsDiff < 3600)
-        {
-            // Serial.println("El tipo ya está guardado y no ha pasado una hora desde el último guardado");
             return false;
-        }
     }
 
     file = SPIFFS.open(fileName, FILE_WRITE);
     if (!file)
-    {
-        // Serial.println("Error al abrir el archivo para escribir");
         return false;
-    }
 
     file.printf("%s^", timestamp);
     file.close();
@@ -370,30 +343,17 @@ bool funciones_spiffs::saveAlertWithTimestamp(const char *timestamp, const char 
 void funciones_spiffs::save_data(String _timestamp, const DS18B20Data *_DS18B20Data, int _energy)
 {
     if (_timestamp.startsWith("1970"))
-    {
-        // Serial.println("Invalid timestamp");
         return;
-    }
 
 #define BYTES_STORE 1438481 // 1570864
 
     if (SPIFFS.totalBytes() - SPIFFS.usedBytes() >= BYTES_STORE)
-    {
-        Serial.println("No memory available");
-        // Serial.println(SPIFFS.totalBytes());
-        // Serial.println(SPIFFS.usedBytes());
         return;
-    }
-    else
-    {
-        Serial.println("Memory available");
-        // Serial.println(SPIFFS.totalBytes());
-        // Serial.println(SPIFFS.usedBytes());
-    }
+
     if (_DS18B20Data->temperature > 100 || _DS18B20Data->temperature <= 0) // si la temperatura es mayor a 100 o menor o igual a 0, se asigna un valor de NAN
         return;
 
-    Serial.println("Saving data");
+    // Serial.println("Saving data");
     String timestamp = _timestamp;
     float temperature = _DS18B20Data->temperature;
     // float humidity = _DS18B20Data->humidity;
@@ -403,10 +363,7 @@ void funciones_spiffs::save_data(String _timestamp, const DS18B20Data *_DS18B20D
 
     File file = SPIFFS.open(fileData, FILE_APPEND);
     if (!file)
-    {
-        Serial.println("Failed to open file for appending");
         return;
-    }
     file.printf("%s,%.2f,%d\n", timestamp.c_str(), temperature, _energy);
     file.close();
 }
@@ -417,25 +374,17 @@ void funciones_spiffs::delete_first_data()
     std::vector<String> dataSaved = getData();
     if (dataSaved.empty())
     {
-        Serial.println("No data to delete");
         SPIFFS.remove(fileData);
         return;
     }
-    else
-        Serial.println("Data to delete"), Serial.println(dataSaved.front());
 
     dataSaved.erase(dataSaved.begin());
 
     File file = SPIFFS.open(fileData, FILE_WRITE);
     if (!file)
-    {
-        Serial.println("Failed to open file for writing");
         return;
-    }
     for (const auto &data : dataSaved)
-    {
         file.println(data);
-    }
     file.close();
 }
 
@@ -445,10 +394,7 @@ std::vector<String> funciones_spiffs::getData()
 
     File file = SPIFFS.open(fileData, FILE_READ);
     if (!file)
-    {
-        Serial.println("Failed to open file for reading");
         return dataSaved;
-    }
 
     while (file.available())
     {
@@ -474,10 +420,7 @@ void funciones_spiffs::Leer_Spiffs_gen(char *p_nombre_wifi, char *p_clave_wifi, 
 
     File file_gen_read = SPIFFS.open("/general_config.txt"); // si no hay nada en la memoria o no hay ningún archivo con este nombre, el esp32 se reinicia. averiguar primero si el archivo existe
     if (!file_gen_read)
-    {
-        // Serial.println("Failed to open file for reading");
         return;
-    }
 
     bool finish = false;
     int rows = 0;
@@ -487,18 +430,11 @@ void funciones_spiffs::Leer_Spiffs_gen(char *p_nombre_wifi, char *p_clave_wifi, 
         i++;
 
         if (contenido[i] == ':')
-        {
             rows++;
-            Serial.println(rows);
-            Serial.println("incrementar row");
-        }
+
         if (rows == 4)
             if (contenido[i] == '^')
-            {
-                Serial.println("Finalizar");
                 finish = true;
-            }
-        // Serial.write(file_gen_read.read());
     }
     file_gen_read.close();
 
@@ -641,7 +577,7 @@ void funciones_spiffs::load_alarm_limits(const char *fileName, int &min, int &ma
     File file = SPIFFS.open(fileName, FILE_READ);
     if (!file)
     {
-        Serial.println("Error al abrir el archivo para leer");
+        // Serial.println("Error al abrir el archivo para leer");
         return;
     }
 
@@ -655,7 +591,7 @@ void funciones_spiffs::load_alarm_limits(const char *fileName, int &min, int &ma
 
 void funciones_spiffs::load_all_alarm_limits()
 {
-    Serial.println("Cargando todos los límites de alarma");
+    // Serial.println("Cargando todos los límites de alarma");
     int min = 0, max = 0;
 
     for (int i = 0; i < keyValues::TYPE_COUNT; i++)
@@ -672,7 +608,7 @@ void funciones_spiffs::load_all_alarm_limits()
 
 void funciones_spiffs::Leer_Spiffs_cal(char *p_value_1, char *p_value_2, char *p_value_3, char *m_value_1, char *m_value_2, char *m_value_3, int campo_del_sensor)
 {
-    Serial.println("void leer_spiffs_gen");
+    // Serial.println("void leer_spiffs_gen");
 
     char contenido[100] = "*";
     unsigned int i = 0;
@@ -718,7 +654,7 @@ void funciones_spiffs::Leer_Spiffs_name_card(char *name_card)
     File file_name_read = SPIFFS.open("/pcb_name.txt"); // si no hay nada en la memoria o no hay ningún archivo con este nombre, el esp32 se reinicia. averiguar primero si el archivo existe
     if (!file_name_read)
     {
-        Serial.println("Failed to open file for reading");
+        // Serial.println("Failed to open file for reading");
         return;
     }
 
