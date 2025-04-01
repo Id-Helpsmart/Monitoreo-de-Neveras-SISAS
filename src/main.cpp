@@ -38,6 +38,9 @@
 #define STACK_SENSORS 10000
 #define STACK_FLASHING_LED 5000
 
+// Definir mutex para proteger acceso a registros
+SemaphoreHandle_t mutexSensorsStruct;
+
 typedef struct // estructura para almacenar la frecuencia con que se publican datos en el servidor o con que se envían por comunicación LoRa
 {
     char config_nombre_wifi[TAMANO_CONFIG_GEN];
@@ -71,6 +74,7 @@ const char *mqtt_server = "iotm.helpmedica.com";
 const int mqtt_port = 1885; // broker de emergencias
 
 char name_card[50];
+char previous_temperature[9] = "*";
 
 bool use_led = false;
 bool trouble = false;
@@ -85,6 +89,7 @@ bool taskCompleted = false;
 bool server_status = false;
 bool posted_message = false;
 bool completed_time = false;
+bool trouble_publish = false;
 bool message_received = false;
 bool download_firmware = false;
 bool flag_access_point = false;
@@ -105,7 +110,6 @@ int input_energy = 0;
 float temperature = 0;
 float battery_level = 0;
 float publish_freq_num = 5000; // frecuencia de publicación de datos de sensores (por defecto cada 5 seg para verificar lectura correcta desde SPIFFS)
-float previous_temperature = 0;
 
 String location;
 String topic_tro;
@@ -118,7 +122,6 @@ String message_trouble;
 JsonDocument doc_config;
 
 DS18B20Data readData;
-DS18B20Saved savedData;
 
 // bluetooth
 BLS_AP _BLS_AP;
@@ -171,7 +174,7 @@ void create_files();
 void Access_Point();
 void Cod_Access_Point();
 String createJsonTrouble();
-bool isStructNull(const DS18B20Data &);
+// bool isStructNull(const DS18B20Data &);
 void Sensors(void *);
 void Alarm(void *pvParameters);
 void TaskUpdate(void *pvParameters);
@@ -195,20 +198,21 @@ void setup()
     digitalWrite(BUZZER, LOW);
     lastSyncTime = millis();
 
-    if (!SPIFFS.begin(true)) // debe iniciarse antes que la función "conectar_wifi", porque inicia el uso del sistema de archivos SPIFFS
-    {
-        Serial.println("Card Mount Failed");
-        return;
-    }
-
     create_files();
     files_read();
+
+    // Crear mutex
+    mutexSensorsStruct = xSemaphoreCreateMutex();
+    if (mutexSensorsStruct == NULL)
+    {
+        Serial.println("Error al crear mutex");
+        while (1)
+            ;
+    }
 
     Task2_flashing_led = xTaskCreateStaticPinnedToCore(Flashing_Led, "flashing_led", STACK_FLASHING_LED, NULL, 2, stack_flashing_led, &dates_flashing_led, 0);
     TaskSensors = xTaskCreateStaticPinnedToCore(Sensors, "Sensors", STACK_SENSORS, NULL, 2, stack_sensors, &dates_sensors, 0);
     delay(500);
-
-    _Sensors.Setup_Sen();
 
     _Wifi_Mqtt.conectar_wifi(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
 
@@ -229,10 +233,10 @@ void loop()
     if (configuration_updated)
         _funciones_spiffs.process_file(doc_config);
 
-    if (flag_access_point == true && server_status == false)
-            Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
+    // if (flag_access_point == true && server_status == false)
+    //         Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
 
-    if(server_close == true)
+    if (server_close == true)
     {
         _BLS_AP.deInitBLE();
         server_close = false;
@@ -282,23 +286,17 @@ void loop()
     }
 
     long now = millis();
-    if (now - lastMsg > publish_freq_num || emergency == true)
+    if (now - lastMsg > publish_freq_num || emergency)
     {
-        
-        if (!isStructNull(readData))
-        {
-            if (previous_temperature != readData.temperature || emergency)
-                completed_time = true, previous_temperature = readData.temperature;
-            else
-                Serial.println("Datos iguales");
-        }
+        if (!trouble)
+            completed_time = true, trouble = false, Serial.println("Completed time");
         else
-            Serial.println("Datos nulos");
+            trouble_publish = true, Serial.println("Trouble publish");
 
-        if (emergency)
-            emergency = false, Serial.println("Emergencia");
-        else
-            lastMsg = now;
+        // if (firstMessageToPublish && !trouble && client_mqtt.connected())
+        //      firstMessageToPublish = false, Serial.println("First message to publish");
+
+        !emergency ? lastMsg = now : emergency = false;
     }
 
     if (!updating)
@@ -321,33 +319,35 @@ void loop()
                 if (server_status == false)
                     use_led = true, led_flashing_lock_time = pdMS_TO_TICKS(2000); // parpadeo cuando se conectó un cliente al punto de acceso
 
-                if (trouble)
+                if (trouble_publish)
                 {
                     // createJsonTrouble();
                     if (client_mqtt.publish(topic_tro.c_str(), createJsonTrouble().c_str()) == true)
-                        Serial.println("Error publish"), trouble = false;
-                    else
-                        Serial.println("El mensaje de problema no se pudo enviar");
+                        trouble_publish = false;
                 }
 
                 if (completed_time || firstMessageToPublish)
                 {
-                    if(firstMessageToPublish)
+                    if (firstMessageToPublish)
                         firstMessageToPublish = false;
 
                     if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(true).c_str()) == true)
                         Serial.println("Publish");
                     else
-                        _funciones_spiffs.save_data(_timestamp.getTime(), &readData, input_energy);
+                        _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
                     //_funciones_spiffs.Almacenar_registro_sensores(_timestamp.getTime(), &readData, input_energy);
 
                     completed_time = false;
                 }
-                if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 5000)
+                if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 2000)
                 {
-                    //Serial.println("Archivo existe, Publicar mensaje guardado");
-
-                    if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(false).c_str()) == true)
+                    String _createJsonSensor = createJsonSensor(false);
+                    if (_createJsonSensor != "")
+                    {
+                        if (client_mqtt.publish(topic_pub.c_str(), _createJsonSensor.c_str()) == true)
+                            _funciones_spiffs.delete_first_data();
+                    }
+                    else
                         _funciones_spiffs.delete_first_data();
                     lastMsgRead = millis();
                 }
@@ -357,7 +357,7 @@ void loop()
         {
             if (completed_time)
             {
-                _funciones_spiffs.save_data(_timestamp.getTime(), &readData, input_energy);
+                _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
                 completed_time = false;
             }
         }
@@ -368,15 +368,17 @@ void loop()
 // DynamicJsonDocument json(bool current_or_saved)
 String createJsonSensor(bool is_real_time)
 {
-    char timestamp_saved[22] = "*";
-    float temperature_saved = 0;
-    int energy_saved = 0;
-    int door_saved = 0;
+    // char timestamp_saved[22] = "*";
+    // float temperature_saved = 0;
+    // int energy_saved = 0;
+    // int door_saved = 0;
+    DS18B20Saved savedData = {};
 
     if (is_real_time == false)
-        _funciones_spiffs.read_data(&savedData);
-    
-    // Serial.println(savedData.energy);
+        _funciones_spiffs.read_data(savedData);
+
+    if (!is_real_time && strcmp(savedData._DS18B20Data.time, "*") == 0)
+        return "";
 
     JsonDocument doc;
     doc["empresa"] = company_name;
@@ -396,7 +398,7 @@ String createJsonSensor(bool is_real_time)
     JsonArray s1values = sensor1.createNestedArray("values");
     JsonObject s1value0 = s1values.createNestedObject();
     s1value0["type"] = keyValueToString(keyValues::TEMPERATURE);
-    is_real_time ? s1value0["value"] = serialized(String(readData.temperature, 2)) : s1value0["value"] = serialized(String(savedData._DS18B20Data.temperature, 2));
+    is_real_time ? s1value0["value"] = atof(readData.temperature) : s1value0["value"] = atof(savedData._DS18B20Data.temperature);
     s1value0["unit"] = "°C";
     s1value0["Lmin"] = alarmLimits[keyValues::TEMPERATURE].min;
     s1value0["Lmax"] = alarmLimits[keyValues::TEMPERATURE].max;
@@ -408,8 +410,8 @@ String createJsonSensor(bool is_real_time)
     JsonArray s101values = sensor101.createNestedArray("values");
     JsonObject s101value0 = s101values.createNestedObject();
     s101value0["type"] = "ENERGIA";
-    is_real_time ? s101value0["value"] = input_energy : s101value0["value"] = savedData.energy;
-    // s101value0["value"] = input_energy;
+    is_real_time ? s101value0["value"] = input_energy : s101value0["value"] = atoi(savedData.energy);
+    // s101value0["value"] = input_energy;)
     s101value0["unit"] = "BOOL";
     s101value0["Lmin"] = 0;
     s101value0["Lmax"] = 1;
@@ -474,8 +476,8 @@ void callback(char *topic, byte *payload, unsigned int length)
         else
             _funciones_spiffs.process_file(doc);
     }
-    else if (posted_message)
-        message_received = true;
+    // else if (posted_message)
+    //     message_received = true;
 }
 
 // Funciones de interrupción por hardware
@@ -491,7 +493,6 @@ void IRAM_ATTR Cod_Access_Point() // función a ejecutar cuando se presiona el b
 
 void Access_Point()
 {
-    
     unsigned long buttonPressTime = millis();
     while (digitalRead(BOTON_COD_AZUL) == HIGH)
     {
@@ -503,9 +504,7 @@ void Access_Point()
             break;
         }
     }
-
     flag_access_point = false;
-
 }
 
 void Sensors(void *pvParameters)
@@ -514,8 +513,10 @@ void Sensors(void *pvParameters)
     // Serial.println(xPortGetCoreID());
     TickType_t last_execution_time;
 
-    // readData = _Sensors.readData();
-    _Sensors.readData(readData);
+    _Sensors.Setup_Sen();
+
+    if (xSemaphoreTake(mutexSensorsStruct, portMAX_DELAY))
+        _Sensors.readData(readData), xSemaphoreGive(mutexSensorsStruct); // Liberar el semáforo
 
     for (;;)
     {
@@ -526,16 +527,8 @@ void Sensors(void *pvParameters)
 
             last_measurement = millis();
 
-            if (isStructNull(readData))
-            {
-                // Serial.println("Sensor data is invalid, skipping...");
-                message_trouble = "Datos de sensor inválidos";
-                trouble = true;
-                continue;
-            }
-
             std::vector<std::pair<float, keyValues::Type>> valuesToCheck = {
-                {readData.temperature, keyValues::TEMPERATURE},
+                {atof(readData.temperature), keyValues::TEMPERATURE},
             };
 
             for (const auto &value : valuesToCheck)
@@ -543,10 +536,9 @@ void Sensors(void *pvParameters)
                 // Serial.println(value.first);
                 if (value.first < alarmLimits[value.second].min || value.first > alarmLimits[value.second].max)
                 {
-                    // Serial.println("Out of range");
+                    Serial.println("Out of range");
                     if (!out_of_range)
-                        emergency = true, out_of_range = true;
-                    // emergency = _funciones_spiffs.saveAlertWithTimestamp(_timestamp.getTime().c_str(), keyValueToString(value.second)), out_of_range = true;
+                        emergency = true, out_of_range = true, Serial.println("Emergency");
                 }
                 else
                     out_of_range = false;
@@ -574,8 +566,7 @@ void Alarm(void *pvParameters)
         {
             long alto_bajo = millis();
             if (alto_bajo - last_alto_bajo < 500)
-                digitalWrite(BUZZER, 20);
-            // digitalWrite(BUZZER, HIGH);
+                digitalWrite(BUZZER, HIGH);
             if (alto_bajo - last_alto_bajo > 500)
                 digitalWrite(BUZZER, LOW);
             if (alto_bajo - last_alto_bajo > 1000)
@@ -583,6 +574,7 @@ void Alarm(void *pvParameters)
         }
         else
         {
+            emergency = true;
             last_alto_bajo = millis();
             digitalWrite(BUZZER, LOW);
         }
@@ -648,7 +640,6 @@ void TaskUpdate(void *pvParameters)
 
             Serial.println("\nDownload firmware file...\n");
 
-
             if (!Firebase.Storage.downloadOTA(&fbdo, STORAGE_BUCKET_ID, location.c_str(), fcsDownloadCallback))
                 Serial.println(fbdo.errorReason());
         }
@@ -669,10 +660,6 @@ void Flashing_Led(void *pvParameters)
 
     while (1)
     {
-        // if (flag_access_point == true && server_status == false)
-        //     Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
-
-        // Serial.println("flashing_led");
         if (use_led == true)
         {
             led_on_off = !led_on_off;
@@ -688,18 +675,18 @@ void Flashing_Led(void *pvParameters)
     }
 }
 
-bool isStructNull(const DS18B20Data &data)
-{
-    return isnan(data.temperature);
-}
-
-// Creating and reading files
 void create_files()
 {
+    if (!SPIFFS.begin(true)) // debe iniciarse antes que la función "conectar_wifi", porque inicia el uso del sistema de archivos SPIFFS
+    {
+        Serial.println("Card Mount Failed");
+        return;
+    }
+    
     if (!SPIFFS.exists("/general_config.txt"))
     {
         File file_gen = SPIFFS.open("/general_config.txt", FILE_WRITE);
-        file_gen.print("NW:HelpSmart^                                        ^\n");
+        file_gen.print("NW:Helpmedica^                                       ^\n");
         file_gen.print("CW:9001295137^                                       ^\n");
         file_gen.print("NC:rAKiQgBfJ1x5HFjpLZck^                             ^\n");
         file_gen.print("NA:T98DK7KlZsFzAYhU5uh1^                             ^\n");
@@ -707,19 +694,10 @@ void create_files()
         Serial.println("file general create");
     }
 
-    if (!SPIFFS.exists("/token-config.txt"))
-    {
-        File file_token = SPIFFS.open("/token-config.txt", FILE_WRITE);
-        file_token.printf("*^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"); // crear fila para token de la app con espacio para 50 caracteres
-        file_token.close();
-        Serial.println("file token create");
-    }
-
     if (!SPIFFS.exists("/frequency.txt"))
     {
         File file_sen = SPIFFS.open("/frequency.txt", FILE_WRITE);
         file_sen.print("10^^^^^\n"); // 1 minuto por defecto
-        // file_sen.print("10^^^^^\n"); // 10 minutos por defecto
         file_sen.close();
         Serial.println("file frequency create");
     }
@@ -752,7 +730,6 @@ void create_files()
     {
         File file_name = SPIFFS.open("/pcb_name.txt", FILE_WRITE);
         file_name.print("Monitoreo Neveras^                              ^^^\n"); // 50 caracteres de contenido (incluyendo nueva línea)
-        //file_name.print("DS18B20 Mamonal^                                ^^^\n"); // 50 caracteres de contenido (incluyendo nueva línea)
         file_name.close();
         Serial.println("file pcb name create");
     }

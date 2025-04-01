@@ -1,5 +1,7 @@
 #include "Wifi_Mqtt.h"
 
+static bool deviceJustStarted = true;
+
 bool Wifi_Mqtt::verify_internet()
 {
     Serial.println("Verificando conexión a internet");
@@ -21,63 +23,51 @@ bool Wifi_Mqtt::verify_internet()
     }
 }
 
-/*bool Wifi_Mqtt::verify_internet()
-{
-    Serial.println("Verificando conexión a internet");
-
-    HTTPClient http;
-    // WiFiClientSecure clientSecure;
-    // clientSecure.setCACert(root_ca);
-    // clientSecure.setTimeout(10000); // 10 segundos de espera
-
-    http.begin(clientSecure, "https://www.google.com/");
-    int httpResponseCode = http.GET(); // código HTTP recibido por la solicitud GET
-    http.end();
-
-    if (httpResponseCode == 200)
-    {
-        Serial.println("conectado :)");
-        return true;
-    }
-    else
-    {
-        Serial.printf("no conectado :(, código de respuesta: %d\n", httpResponseCode);
-        // Serial.println("no conectado :(");
-        if (server_status == false)
-            use_led = false;
-        return false;
-    }
-}*/
-
 void Wifi_Mqtt::conectar_wifi(char *p_nombre_wifi, char *p_clave_wifi)
 {
     WiFi.mode(WIFI_STA);
 
     int intentos = 0;
     if (WiFi.status() != WL_CONNECTED)
-    //while (WiFi.status() != WL_CONNECTED)
     {
-
-        // Serial.println(WiFi.getAutoConnect());
-        //  delay(1000); //este retardo es para visualizar el mensaje por serial, para que dé tiempo de verlo
         Serial.print("Conectando a red wifi \n");
         Serial.println(p_nombre_wifi);
         Serial.println(p_clave_wifi);
         WiFi.setHostname("Helpsmart");
+
+        // esp_wifi_set_max_tx_power(80); // Establecer la potencia máxima a 20 dBm
         // WiFi.config(ip, gateway, subnet);  // Establecer conexión con una IP fija
         WiFi.begin(p_nombre_wifi, p_clave_wifi);
         Serial.println("Esperando conexión WiFi");
-
-        if (WiFi.status() != WL_CONNECTED)
+        
+        if (deviceJustStarted)
         {
-            if (server_status == false)
+            while (WiFi.status() != WL_CONNECTED)
+            {
                 use_led = false;
-            Serial.print('.');
-            // WiFi.mode(WIFI_OFF);
-            delay(1000);
+                Serial.print('.');
+                delay(1000);
+                if (intentos <= 30)
+                    intentos++;
+                else
+                    ESP.restart();
+            }
+            Serial.println(WiFi.localIP());
+            deviceJustStarted = false;
         }
         else
-            Serial.println(WiFi.localIP());
+        {
+
+            if (WiFi.status() != WL_CONNECTED)
+            {
+                if (server_status == false)
+                    use_led = false;
+                Serial.print('.');
+                delay(1000);
+            }
+            else
+                Serial.println(WiFi.localIP());
+        }
     }
 }
 

@@ -1,16 +1,17 @@
 #include "Sensores.h"
 
-fire _fire;
 funciones_spiffs spiffs;
+
+static float lastTemperature = 0.0;
 
 void Sensores::Setup_Sen()
 {
     pinMode(PIN_4_INPUT_ENERGY, INPUT_PULLDOWN);
     pinMode(PIN_36_BATTERY_LEVEL, INPUT);
-    analogReadResolution(10); // resolución del conversor ADC para la lectura de la batería
+    //analogReadResolution(10); // resolución del conversor ADC para la lectura de la batería
 
     spiffs.Leer_Spiffs_name_card(name_card);
-    
+
     spiffs.readCalibrationPoints(keyValueToString(keyValues::TEMPERATURE), values);
     /*for (int i = 0; i < 6; i++) {
         Serial.print("Value ");
@@ -23,31 +24,47 @@ void Sensores::Setup_Sen()
     _pt_value_3 = atof(pt_value[2]); 2
     _mt_value_1 = atof(mt_value[0]); 3
     _mt_value_2 = atof(mt_value[1]); 4
-    _mt_value_3 = atof(mt_value[2]);*/ //5
+    _mt_value_3 = atof(mt_value[2]);*/
+    // 5
 
     mt1 = (values[1] - values[0]) / (values[4] - values[3]);
     mt2 = (values[2] - values[1]) / (values[5] - values[4]);
     /*Serial.println("Calibración");
     Serial.println(mt1);
     Serial.println(mt2);*/
-}   
+}
 
 void Sensores::readData(DS18B20Data &envData)
 {
     DS18B20HS _DS18B20;
-    //DS18B20Data envData;
+    // DS18B20Data envData;
 
-    envData = _DS18B20.getData();
+    _DS18B20.getData(envData);
 
-    if (envData.temperature > 100 || envData.temperature <= 0) // si la temperatura es mayor a 100 o menor o igual a 0, se asigna un valor de NAN
-        envData.temperature = NAN;
+    float temperature = atof(envData.temperature);
 
-    if (envData.temperature < values[4])
-        envData.temperature = mt1 * envData.temperature - (mt1 * values[3]) + (values[0]);
-    if (envData.temperature >= values[4])
-        envData.temperature = mt2 * envData.temperature - (mt2 * values[4]) + (values[1]);
+    if (lastTemperature == 0.0)
+        lastTemperature = temperature; // initialize on first call
 
-    //return envData;
+    while (fabs(temperature - lastTemperature) > threshold)
+    {
+        _DS18B20.getData(envData);
+        temperature = atof(envData.temperature);
+        delay(100);
+        // if (temperature > lastTemperature)
+        //     temperature = lastTemperature + threshold;
+        // else
+        //     temperature = lastTemperature - threshold;
+    }
+    
+    lastTemperature = temperature;
+
+    if (temperature < values[4])
+    temperature = mt1 * temperature - (mt1 * values[3]) + (values[0]);
+    if (temperature >= values[4])
+    temperature = mt2 * temperature - (mt2 * values[4]) + (values[1]);
+    
+    dtostrf(temperature, 6, 2, envData.temperature);
 }
 
 void Sensores::Update_Notify()

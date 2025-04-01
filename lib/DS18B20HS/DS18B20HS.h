@@ -8,16 +8,19 @@
 
 #define ONE_WIRE_BUS 21
 
+extern bool trouble;
+extern String message_trouble;
+
 struct DS18B20Data
 {
     char time[22] = "*";
-    float temperature = 0;
+    char temperature[9] = "*";
 };
 
 struct DS18B20Saved
 {
     DS18B20Data _DS18B20Data;
-    int energy = false;
+    char energy[2] = "*";
 };
 
 struct keyValues
@@ -46,7 +49,7 @@ private:
 public:
     DS18B20HS();
     ~DS18B20HS();
-    DS18B20Data getData();
+    void getData(DS18B20Data &);
 };
 
 #endif

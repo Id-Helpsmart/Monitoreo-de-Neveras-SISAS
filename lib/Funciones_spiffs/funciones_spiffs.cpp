@@ -261,17 +261,17 @@ void funciones_spiffs::save_calibration_points(JsonDocument json)
             file_cal_save.printf("%.1f^", value6);
             file_cal_save.close();
 
-            ESP.restart();
-            // flag_callback_broker = true;
+            // ESP.restart();
+            flag_callback_broker = true;
         }
         // else
         //     Serial.println("El archivo no existe");
     }
 }
 
-bool funciones_spiffs::read_data(DS18B20Saved *_DS18B20Saved)
+bool funciones_spiffs::read_data(DS18B20Saved &_DS18B20Saved)
 {
-    // Serial.println("Reading data");
+    Serial.println("Reading data");
     String data;
     if (SPIFFS.exists(fileData))
     {
@@ -279,24 +279,20 @@ bool funciones_spiffs::read_data(DS18B20Saved *_DS18B20Saved)
         if (!dataSaved.empty())
         {
             data = dataSaved.front();
-            // Serial.println(data);
-            sscanf(data.c_str(), "%21[^,],%f,%f",
-                   _DS18B20Saved->_DS18B20Data.time,
-                   &_DS18B20Saved->_DS18B20Data.temperature,
-                   &_DS18B20Saved->energy);
-            if(_DS18B20Saved->energy > 1)
-                _DS18B20Saved->energy = 1;
+            Serial.println(data);
+            sscanf(data.c_str(), "%21[^,],%9[^,],%9[^,],%2",
+                   _DS18B20Saved._DS18B20Data.time,
+                   &_DS18B20Saved._DS18B20Data.temperature,
+                   &_DS18B20Saved.energy);
+            // if (_DS18B20Saved.energy > 1)
+            //     _DS18B20Saved.energy = 1;
             return true;
         }
         else
-        {
             return false;
-        }
     }
     else
-    {
         return false;
-    }
 }
 
 bool funciones_spiffs::saveAlertWithTimestamp(const char *timestamp, const char *type)
@@ -340,9 +336,9 @@ bool funciones_spiffs::saveAlertWithTimestamp(const char *timestamp, const char 
     return true;
 }
 
-void funciones_spiffs::save_data(String _timestamp, const DS18B20Data *_DS18B20Data, int _energy)
+void funciones_spiffs::save_data(String _timestamp, const DS18B20Data &_DS18B20Data, int &_energy)
 {
-    if (_timestamp.startsWith("1970"))
+    if (_timestamp.startsWith("1970") || _timestamp.startsWith("*"))
         return;
 
 #define BYTES_STORE 1438481 // 1570864
@@ -350,21 +346,24 @@ void funciones_spiffs::save_data(String _timestamp, const DS18B20Data *_DS18B20D
     if (SPIFFS.totalBytes() - SPIFFS.usedBytes() >= BYTES_STORE)
         return;
 
-    if (_DS18B20Data->temperature > 100 || _DS18B20Data->temperature <= 0) // si la temperatura es mayor a 100 o menor o igual a 0, se asigna un valor de NAN
-        return;
+    // if (_DS18B20Data.temperature > 125 || _DS18B20Data.temperature <= -55) // si la temperatura es mayor a 100 o menor o igual a 0, se asigna un valor de NAN
+    //     return;
 
     // Serial.println("Saving data");
-    String timestamp = _timestamp;
-    float temperature = _DS18B20Data->temperature;
+    // String timestamp = _timestamp;
+    // float temperature = _DS18B20Data.temperature;
     // float humidity = _DS18B20Data->humidity;
     // Serial.println(timestamp);
     // Serial.println(temperature);
     // Serial.println(humidity);
-
+    Serial.println("Guardando datos");
+    Serial.println(_timestamp);
+    Serial.println(_DS18B20Data.temperature);
+    Serial.println(_energy);
     File file = SPIFFS.open(fileData, FILE_APPEND);
     if (!file)
         return;
-    file.printf("%s,%.2f,%d\n", timestamp.c_str(), temperature, _energy);
+    file.printf("%s,%s,%d\n", _timestamp.c_str(), _DS18B20Data.temperature, _energy);
     file.close();
 }
 
@@ -452,36 +451,6 @@ void funciones_spiffs::Leer_Spiffs_gen(char *p_nombre_wifi, char *p_clave_wifi, 
     // Serial.printf("Nombre Wifi  => %s\nClave Wifi  => %s\nNombre Clinica  => %s\nNombre_Area  => %s\n", p_nombre_wifi, p_clave_wifi, p_nombre_clinica, p_nombre_area);
 }
 
-void funciones_spiffs::Leer_Spiffs_gen(char *p_token_de_app) // función sobrecargada. recibe un número de argumentos distinto
-{
-    char contenido[55] = "*";
-
-    File file_tokens_read = SPIFFS.open("/token-config.txt", "r+");
-    if (!file_tokens_read)
-    {
-        Serial.println("Failed to open file for reading");
-        return;
-    }
-
-    int i = 0;
-    bool finish = false;
-    // file_tokens_read.seek(0, SeekSet);
-    while (file_tokens_read.available() && finish == false)
-    {
-        contenido[i] = file_tokens_read.read();
-        if (contenido[i] == '^')
-            finish = true;
-        else
-            i++;
-    }
-
-    file_tokens_read.close();
-
-    strcpy(p_token_de_app, contenido);
-
-    // Serial.printf("token app: %s\n", p_token_de_app);
-}
-
 void funciones_spiffs::Leer_Spiffs_sen(float *p_publish_freq_num)
 {
     // Serial.println("void leyendo frecuencia");
@@ -551,23 +520,6 @@ void funciones_spiffs::readCalibrationPoints(const char *type, float values[6])
     for (int i = 1; i < 5; i++)
         values[i] = atof(strtok(NULL, ","));
     values[5] = atof(strtok(NULL, "^"));
-
-    /*for (int i = 0; i < 6 && token != nullptr; i++)
-    {
-        _values[i] = atof(token);
-        token = strtok(nullptr, ",");
-    }
-    values = *_values;*/
-    /*for (int i = 0; i < 6; i++)
-    {
-        Serial.print("Value ");
-        Serial.print(i + 1);
-        Serial.print(": ");
-        Serial.println(values[i]);
-    }*/
-    // values = _values[0];
-
-    // values = atof(contenido);
 }
 
 // void funciones_spiffs::read_spiffs_alarm(char *file_name, char *p_nivel_minimo, char *p_nivel_maximo) // el parámetro "tipo_de_sensor" hace referencia al número que identifica cada tipo de sensor. este puede encontrarse en el documento llamado "tramas de dispositivos"

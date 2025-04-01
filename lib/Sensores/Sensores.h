@@ -18,10 +18,12 @@ private:
     char name_card[50];
     char on[3] = "ON";
     char off[4] = "OFF";
-        
+
+    const float threshold = 10.0; // maximum allowed change
     const float battery_max = 3.3; // maximum voltage of battery
     const float battery_min = 2.6; // minimum voltage of battery before shutdown
     const float voltage_min = 2.8;
+
 
     float values[6];
     float mt1 = 0.0;
