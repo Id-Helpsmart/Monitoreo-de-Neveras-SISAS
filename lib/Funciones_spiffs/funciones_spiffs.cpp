@@ -100,7 +100,7 @@ void funciones_spiffs::save_general_settings(JsonDocument json)
 
     file_gen_save.close();
 
-    // Serial.println("Configuracion general completada");
+    Serial.println("Configuracion general completada");
 
     ESP.restart();
 }

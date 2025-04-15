@@ -233,9 +233,6 @@ void loop()
     if (configuration_updated)
         _funciones_spiffs.process_file(doc_config);
 
-    // if (flag_access_point == true && server_status == false)
-    //         Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
-
     if (server_close == true)
     {
         _BLS_AP.deInitBLE();
@@ -259,17 +256,69 @@ void loop()
         flag_callback_broker = false;
     }
 
-    if (millis() - last_reconnection >= 1000)
-    {
-        _Wifi_Mqtt.conectar_wifi(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
-        last_reconnection = millis();
+    // Mejorado: Gestión de conexiones consolidada
+    if (!updating) {
+        bool isConnected = _Wifi_Mqtt.manage_connections(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
+        
+        // Actualizar indicadores visuales basados en el estado de conexión
+        if (_Wifi_Mqtt.getConnectionState() == FULLY_CONNECTED) {
+            if (server_status == false && !use_led) {
+                use_led = true;
+                led_flashing_lock_time = pdMS_TO_TICKS(2000); // Parpadeo lento cuando está conectado
+            }
+            
+            // Sincronizar timestamp solo cuando tengamos conexión completa
+            if (!synchronizedTimestamp) {
+                _timestamp.synchronizeTimestamp();
+                if (!_timestamp.getTime().startsWith("1970"))
+                    synchronizedTimestamp = true;
+            }
+            
+            // Procesamiento de mensajes y timer sync cuando hay conexión completa
+            if (trouble_publish) {
+                if (client_mqtt.publish(topic_tro.c_str(), createJsonTrouble().c_str()) == true)
+                    trouble_publish = false;
+            }
+
+            if (completed_time || firstMessageToPublish) {
+                if (firstMessageToPublish)
+                    firstMessageToPublish = false;
+
+                if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(true).c_str()) == true)
+                    Serial.println("Publish");
+                else
+                    _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
+
+                completed_time = false;
+            }
+            
+            // Intentar enviar datos almacenados localmente si hay conexión
+            if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 2000) {
+                String _createJsonSensor = createJsonSensor(false);
+                if (_createJsonSensor != "") {
+                    if (client_mqtt.publish(topic_pub.c_str(), _createJsonSensor.c_str()) == true)
+                        _funciones_spiffs.delete_first_data();
+                }
+                else
+                    _funciones_spiffs.delete_first_data();
+                lastMsgRead = millis();
+            }
+        } else {
+            // Sin conexión completa, almacenar datos localmente si es necesario
+            if (completed_time) {
+                _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
+                completed_time = false;
+            }
+        }
     }
 
-    // static unsigned long lastSyncTime = millis();
+    // Timer de sincronización
     if (millis() - lastSyncTime >= 24L * 60L * 60L * 1000L) // 24 hours in milliseconds
     {
-        _timestamp.synchronizeTimestamp();
-        lastSyncTime = millis();
+        if (_Wifi_Mqtt.getConnectionState() == FULLY_CONNECTED) {
+            _timestamp.synchronizeTimestamp();
+            lastSyncTime = millis();
+        }
     }
 
     if (out_of_range && !create_alarm)
@@ -293,74 +342,11 @@ void loop()
         else
             trouble_publish = true, Serial.println("Trouble publish");
 
-        // if (firstMessageToPublish && !trouble && client_mqtt.connected())
-        //      firstMessageToPublish = false, Serial.println("First message to publish");
-
         !emergency ? lastMsg = now : emergency = false;
     }
 
-    if (!updating)
-    {
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            if (!client_mqtt.connected())
-                _Wifi_Mqtt.reconnect(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
-            else
-            {
-                if (!synchronizedTimestamp)
-                {
-                    _timestamp.synchronizeTimestamp();
-                    if (_timestamp.getTime().startsWith("1970"))
-                        synchronizedTimestamp = false;
-                    else
-                        synchronizedTimestamp = true;
-                }
-
-                if (server_status == false)
-                    use_led = true, led_flashing_lock_time = pdMS_TO_TICKS(2000); // parpadeo cuando se conectó un cliente al punto de acceso
-
-                if (trouble_publish)
-                {
-                    // createJsonTrouble();
-                    if (client_mqtt.publish(topic_tro.c_str(), createJsonTrouble().c_str()) == true)
-                        trouble_publish = false;
-                }
-
-                if (completed_time || firstMessageToPublish)
-                {
-                    if (firstMessageToPublish)
-                        firstMessageToPublish = false;
-
-                    if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(true).c_str()) == true)
-                        Serial.println("Publish");
-                    else
-                        _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
-                    //_funciones_spiffs.Almacenar_registro_sensores(_timestamp.getTime(), &readData, input_energy);
-
-                    completed_time = false;
-                }
-                if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 2000)
-                {
-                    String _createJsonSensor = createJsonSensor(false);
-                    if (_createJsonSensor != "")
-                    {
-                        if (client_mqtt.publish(topic_pub.c_str(), _createJsonSensor.c_str()) == true)
-                            _funciones_spiffs.delete_first_data();
-                    }
-                    else
-                        _funciones_spiffs.delete_first_data();
-                    lastMsgRead = millis();
-                }
-            }
-        }
-        else
-        {
-            if (completed_time)
-            {
-                _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
-                completed_time = false;
-            }
-        }
+    // Mantener el loop MQTT activo si estamos conectados
+    if (_Wifi_Mqtt.getConnectionState() == FULLY_CONNECTED) {
         client_mqtt.loop();
     }
 }
@@ -496,6 +482,7 @@ void Access_Point()
     unsigned long buttonPressTime = millis();
     while (digitalRead(BOTON_COD_AZUL) == HIGH)
     {
+        //Serial.println("Access Point");
         if (millis() - buttonPressTime > 2000)
         {
             use_led = true;
@@ -520,6 +507,11 @@ void Sensors(void *pvParameters)
 
     for (;;)
     {
+        if (flag_access_point == true && server_status == false)
+        {
+            Serial.println("Access Point");
+            Access_Point(); // Ya que esta tarea se ejecuta constantemente, se verifica si se activó el modo configuración
+        }
 
         if (millis() - last_measurement >= 1000 && updating == false)
         {

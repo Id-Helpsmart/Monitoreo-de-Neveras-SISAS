@@ -42,21 +42,21 @@ class MyCharacteristicCallbacks : public BLECharacteristicCallbacks
         std::string value = pConfigCharacteristic->getValue();
         if (value.length() > 0)
         {
-            Serial.print("Configuration JSON received: ");
-            Serial.println(value.c_str());
+            // Serial.print("Configuration JSON received: ");
+            // Serial.println(value.c_str());
 
             // Parse the JSON configuration
             DeserializationError error = deserializeJson(doc_config, value);
             if (error)
             {
-                Serial.print(F("deserializeJson() failed: "));
-                Serial.println(error.f_str());
+                // Serial.print(F("deserializeJson() failed: "));
+                // Serial.println(error.f_str());
                 return;
             }
 
             if (doc_config["general_config"])
             {
-                Serial.println("cg");
+                // Serial.println("cg");
 
                 configuration_updated = true;
                 // flag_callback_broker = true;
@@ -72,31 +72,31 @@ void BLS_AP::deInitBLE()
 {
     timerRestart(timer_zero_AP);
     timerStop(timer_zero_AP);
-    Serial.println("Intentando detener el servidor BLE...");
+    // Serial.println("Intentando detener el servidor BLE...");
 
     if (pServer)
     {
 
         if (deviceConnected)
         {
-            Serial.println("Aún hay un dispositivo conectado. Desconectando...");
+            // Serial.println("Aún hay un dispositivo conectado. Desconectando...");
             pServer->disconnect(0); // Forzar desconexión del cliente
             delay(500);             // Espera un poco para asegurar que la desconexión se procesa
         }
 
-        Serial.println("Deteniendo servidor Bluetooth...");
+        // Serial.println("Deteniendo servidor Bluetooth...");
         BLEDevice::stopAdvertising(); // Detiene la publicidad BLE
         delay(100);
         BLEDevice::deinit(); // Apaga el stack BLE
         pServer = nullptr;
-        Serial.println("Servidor BLE detenido con éxito.");
+        // Serial.println("Servidor BLE detenido con éxito.");
         ESP.restart();
     }
 }
 
 void IRAM_ATTR flagClose()
 {
-    Serial.println("Timer finalizado");
+    // Serial.println("Timer finalizado");
     // ESP.restart();
     server_close = true;
 }
@@ -113,9 +113,9 @@ void BLS_AP::Access_Point(bool *p_estado_servidor)
         timerAlarmEnable(timer_zero_AP); // inicio del timer que limita el tiempo en que permanecerá activo el punto de acceso para configurar el ESP32
     }
     else
-        timerStart(timer_zero_AP), Serial.println("Timer iniciado");
+        timerStart(timer_zero_AP); //, Serial.println("Timer iniciado");
 
-    Serial.println("Inicio servidor bluetooth");
+    // Serial.println("Inicio servidor bluetooth");
 
     *p_estado_servidor = true;
 
@@ -152,5 +152,5 @@ void BLS_AP::Access_Point(bool *p_estado_servidor)
     pAdvertising->setScanResponse(false);
     pAdvertising->setMinPreferred(0x0); // set value to 0x00 to not advertise this parameter
     BLEDevice::startAdvertising();
-    Serial.println("Waiting a client connection to notify...");
+    // Serial.println("Waiting a client connection to notify...");
 }
