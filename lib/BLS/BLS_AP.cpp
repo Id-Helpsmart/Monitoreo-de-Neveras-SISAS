@@ -32,6 +32,7 @@ class MyServerCallbacks : public BLEServerCallbacks
         deviceConnected = false;
         led_flashing_lock_time = pdMS_TO_TICKS(100); // Cliente se desconectó
         timerStart(timer_zero_AP);                   // iniciar el timer al desconectarse
+        BLEDevice::startAdvertising();
     }
 };
 

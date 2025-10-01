@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_task_wdt.h>
+#include "esp_timer.h" // Para el timer de alto nivel de ESP32
 
 #include "BLS_AP.h"
 #include "Sensores.h"
@@ -64,23 +65,24 @@ estructura1 datos_recibidos_gen; // variable para almacenar datos configuración
 estructura2 datos_recibidos_sen; // variable para almacenar datos configuración de sensores
 estructura3 datos_recibidos_ala; // variable para almacenar datos niveles de alarma
 
-const char *fileData = "/data.csv";
-const char *password = "helpmedica$";
+const char *fileData = "/device-data.txt";
+// const char *fileData = "/data.csv";
+// const char *password = "helpmedica$";
 
 //**************************************
 //*********** MQTT CONFIG **************
 //**************************************
 const char *mqtt_server = "iotm.helpmedica.com";
-const int mqtt_port = 1885; // broker de emergencias
+const int mqtt_port = 1884; // broker de emergencias
 
 char name_card[50];
 char previous_temperature[9] = "*";
 
 bool use_led = false;
 bool trouble = false;
+bool advance = false;
 bool firmware = false;
 bool updating = false;
-bool emergency = false;
 bool out_of_range = false;
 bool reconnection = false;
 bool server_close = false;
@@ -88,7 +90,6 @@ bool create_alarm = false;
 bool taskCompleted = false;
 bool server_status = false;
 bool posted_message = false;
-bool completed_time = false;
 bool trouble_publish = false;
 bool message_received = false;
 bool download_firmware = false;
@@ -98,6 +99,9 @@ bool firstMessageToPublish = true;
 bool synchronizedTimestamp = false;
 bool configuration_updated = false;
 
+volatile bool emergency = false;
+volatile bool completed_time = false;
+
 long lastMsg = 0;
 long lastMsgRead = 0;
 long last_alto_bajo = 0;
@@ -105,7 +109,9 @@ long last_measurement = 0;
 long last_reconnection = 0;
 static unsigned long lastSyncTime = 0;
 
-int input_energy = 0;
+// Variables para el timer ESP32
+esp_timer_handle_t publish_timer = NULL;
+bool input_energy = false;
 
 float temperature = 0;
 float battery_level = 0;
@@ -113,6 +119,7 @@ float publish_freq_num = 5000; // frecuencia de publicación de datos de sensore
 
 String location;
 String topic_tro;
+String topic_upd;
 String topic_sub;
 String topic_pub;
 String area_name;
@@ -169,11 +176,15 @@ TickType_t firmware_update_lock_time = pdMS_TO_TICKS(10);
 portMUX_TYPE free_zone_timers = portMUX_INITIALIZER_UNLOCKED;  // variable para establecer zona de código libre de interrupciones durante interrupciones de temporizador
 portMUX_TYPE free_zone_buttons = portMUX_INITIALIZER_UNLOCKED; // variable para establecer zona de código libre de interrupciones durante interrupciones de pulsación de botones
 
+void IRAM_ATTR onPublishTimer(void *arg);
+void setupPublishTimer(uint64_t interval_us);
+
 void files_read();
 void create_files();
 void Access_Point();
 void Cod_Access_Point();
 String createJsonTrouble();
+String createJsonUpdate(String msg);
 // bool isStructNull(const DS18B20Data &);
 void Sensors(void *);
 void Alarm(void *pvParameters);
@@ -193,7 +204,7 @@ void setup()
     pinMode(BOTON_COD_AZUL, INPUT_PULLDOWN);
     attachInterrupt(digitalPinToInterrupt(BOTON_COD_AZUL), Cod_Access_Point, RISING); // LOW/HIGH/FALLING/RISING/CHANGE
     Serial.begin(115200);
-    Serial.println("Version Bluetooth + OTA 13-02-2025"); // Iniciar la comunicaión serial en 115200 baudios                                                        // Iniciar la comunicaión serial en 115200 baudios
+    Serial.println("Version Bluetooth + OTA 30-09-2025"); // Iniciar la comunicaión serial en 115200 baudios                                                        // Iniciar la comunicaión serial en 115200 baudios
 
     digitalWrite(BUZZER, LOW);
     lastSyncTime = millis();
@@ -214,6 +225,9 @@ void setup()
     TaskSensors = xTaskCreateStaticPinnedToCore(Sensors, "Sensors", STACK_SENSORS, NULL, 2, stack_sensors, &dates_sensors, 0);
     delay(500);
 
+    // Inicializar el timer para la publicación periódica
+    setupPublishTimer(publish_freq_num * 1000);
+
     _Wifi_Mqtt.conectar_wifi(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
 
     client_mqtt.setServer(mqtt_server, mqtt_port);
@@ -230,6 +244,9 @@ void loop()
     if (state_flashing_led != eRunning || state_flashing_led != eReady || state_flashing_led != eBlocked) // si el estado es distinto a corriendo, listo o bloqueado
         vTaskResume(Task2_flashing_led);
 
+    if (eTaskGetState(TaskSensors) == eSuspended)
+        vTaskResume(TaskSensors);
+
     if (configuration_updated)
         _funciones_spiffs.process_file(doc_config);
 
@@ -238,6 +255,8 @@ void loop()
         _BLS_AP.deInitBLE();
         server_close = false;
         server_status = false;
+        use_led = false;                             // Detener el parpadeo del LED cuando se cierra el servidor Bluetooth
+        led_flashing_lock_time = pdMS_TO_TICKS(500); // Restaurar la frecuencia normal de parpadeo
     }
 
     if (firmware == true)
@@ -256,69 +275,17 @@ void loop()
         flag_callback_broker = false;
     }
 
-    // Mejorado: Gestión de conexiones consolidada
-    if (!updating) {
-        bool isConnected = _Wifi_Mqtt.manage_connections(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
-        
-        // Actualizar indicadores visuales basados en el estado de conexión
-        if (_Wifi_Mqtt.getConnectionState() == FULLY_CONNECTED) {
-            if (server_status == false && !use_led) {
-                use_led = true;
-                led_flashing_lock_time = pdMS_TO_TICKS(2000); // Parpadeo lento cuando está conectado
-            }
-            
-            // Sincronizar timestamp solo cuando tengamos conexión completa
-            if (!synchronizedTimestamp) {
-                _timestamp.synchronizeTimestamp();
-                if (!_timestamp.getTime().startsWith("1970"))
-                    synchronizedTimestamp = true;
-            }
-            
-            // Procesamiento de mensajes y timer sync cuando hay conexión completa
-            if (trouble_publish) {
-                if (client_mqtt.publish(topic_tro.c_str(), createJsonTrouble().c_str()) == true)
-                    trouble_publish = false;
-            }
-
-            if (completed_time || firstMessageToPublish) {
-                if (firstMessageToPublish)
-                    firstMessageToPublish = false;
-
-                if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(true).c_str()) == true)
-                    Serial.println("Publish");
-                else
-                    _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
-
-                completed_time = false;
-            }
-            
-            // Intentar enviar datos almacenados localmente si hay conexión
-            if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 2000) {
-                String _createJsonSensor = createJsonSensor(false);
-                if (_createJsonSensor != "") {
-                    if (client_mqtt.publish(topic_pub.c_str(), _createJsonSensor.c_str()) == true)
-                        _funciones_spiffs.delete_first_data();
-                }
-                else
-                    _funciones_spiffs.delete_first_data();
-                lastMsgRead = millis();
-            }
-        } else {
-            // Sin conexión completa, almacenar datos localmente si es necesario
-            if (completed_time) {
-                _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
-                completed_time = false;
-            }
-        }
+    if (millis() - last_reconnection >= 1000)
+    {
+        _Wifi_Mqtt.conectar_wifi(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
+        last_reconnection = millis();
     }
 
     // Timer de sincronización
     if (millis() - lastSyncTime >= 24L * 60L * 60L * 1000L) // 24 hours in milliseconds
     {
-        if (_Wifi_Mqtt.getConnectionState() == FULLY_CONNECTED) {
-            _timestamp.synchronizeTimestamp();
-            lastSyncTime = millis();
-        }
+        _timestamp.synchronizeTimestamp();
+        lastSyncTime = millis();
     }
 
     if (out_of_range && !create_alarm)
@@ -334,19 +301,96 @@ void loop()
         create_alarm = false;
     }
 
-    long now = millis();
-    if (now - lastMsg > publish_freq_num || emergency)
+    // Comprobar si el timer se ha disparado o si hay una emergencia
+    // if (timer_triggered || emergency)
+    if (completed_time || emergency)
     {
+        // if (timer_triggered)
+        //     Serial.println("Timer triggered");
+        // else
+        //     Serial.println("Emergency triggered");
+
         if (!trouble)
             completed_time = true, trouble = false, Serial.println("Completed time");
         else
             trouble_publish = true, Serial.println("Trouble publish");
 
-        !emergency ? lastMsg = now : emergency = false;
+        if (emergency)
+            emergency = false;
+
+        // timer_triggered = false; // Resetear el flag del timer
     }
 
-    // Mantener el loop MQTT activo si estamos conectados
-    if (_Wifi_Mqtt.getConnectionState() == FULLY_CONNECTED) {
+    if (!updating)
+    {
+        if (WiFi.status() == WL_CONNECTED)
+        // if (wifi_connected && mqtt_connected)
+        {
+            if (!client_mqtt.connected())
+                _Wifi_Mqtt.reconnect(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi);
+            else
+            {
+                if (!synchronizedTimestamp)
+                {
+                    _timestamp.synchronizeTimestamp();
+                    if (_timestamp.getTime().startsWith("1970"))
+                        synchronizedTimestamp = false;
+                    else
+                        synchronizedTimestamp = true;
+                }
+
+                if (server_status == false && !flag_access_point)
+                    use_led = false; // Solo encender LED cuando hay un punto de acceso activo
+
+                if (trouble_publish)
+                {
+                    // createJsonTrouble();
+                    Serial.println("Publish trouble");
+                    if (client_mqtt.publish(topic_tro.c_str(), createJsonTrouble().c_str()) == true)
+                        trouble_publish = false;
+                }
+
+                if (completed_time || (firstMessageToPublish && !trouble))
+                {
+                    if (firstMessageToPublish)
+                        firstMessageToPublish = false, Serial.println("First message to publish");
+
+                    if (client_mqtt.publish(topic_pub.c_str(), createJsonSensor(true).c_str()) == true)
+                        Serial.println("Publish");
+                    else
+                        _funciones_spiffs.save_sensor_data(_timestamp.getTime(), readData, input_energy);
+                    // _funciones_spiffs.save_data(_timestamp.getTime(), readData, input_energy);
+                    //_funciones_spiffs.Almacenar_registro_sensores(_timestamp.getTime(), &readData, input_energy);
+
+                    completed_time = false;
+                }
+                if (SPIFFS.exists(fileData) && (millis() - lastMsgRead) > 1000)
+                {
+                    String _createJsonSensor = createJsonSensor(false);
+                    if (_createJsonSensor != "")
+                    {
+                        if (client_mqtt.publish(topic_pub.c_str(), _createJsonSensor.c_str()) == true)
+                        {
+                            DS18B20Saved _savedData;
+                            _funciones_spiffs.read_sensor_register(false, _savedData);
+                            Serial.println("Publish saved data");
+                        }
+                        // _funciones_spiffs.delete_first_data();
+                    }
+                    // else
+                    //     _funciones_spiffs.delete_first_data();
+                    lastMsgRead = millis();
+                }
+            }
+        }
+        else
+        {
+            if (completed_time)
+            {
+                _funciones_spiffs.save_sensor_data(_timestamp.getTime(), readData, input_energy);
+                completed_time = false;
+            }
+        }
         client_mqtt.loop();
     }
 }
@@ -361,10 +405,15 @@ String createJsonSensor(bool is_real_time)
     DS18B20Saved savedData = {};
 
     if (is_real_time == false)
-        _funciones_spiffs.read_data(savedData);
+        _funciones_spiffs.read_sensor_register(true, savedData);
 
     if (!is_real_time && strcmp(savedData._DS18B20Data.time, "*") == 0)
         return "";
+
+    Serial.println("Creating JSON");
+    Serial.print(savedData._DS18B20Data.time);
+    Serial.print(" - ");
+    Serial.println(savedData._DS18B20Data.temperature);
 
     JsonDocument doc;
     doc["empresa"] = company_name;
@@ -396,7 +445,7 @@ String createJsonSensor(bool is_real_time)
     JsonArray s101values = sensor101.createNestedArray("values");
     JsonObject s101value0 = s101values.createNestedObject();
     s101value0["type"] = "ENERGIA";
-    is_real_time ? s101value0["value"] = input_energy : s101value0["value"] = atoi(savedData.energy);
+    is_real_time ? s101value0["value"] = input_energy ? 1 : 0 : s101value0["value"] = atoi(savedData.energy);
     // s101value0["value"] = input_energy;)
     s101value0["unit"] = "BOOL";
     s101value0["Lmin"] = 0;
@@ -431,6 +480,24 @@ String createJsonTrouble()
     trouble["pcbname"] = name_card;
     trouble["timestamp"] = _timestamp.getTime();
     trouble["msg"] = message_trouble;
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+    return jsonString;
+}
+
+String createJsonUpdate(String msg)
+{
+    JsonDocument doc; // Tamaño más pequeño para update
+    JsonArray updateArray = doc.createNestedArray("update");
+
+    JsonObject update = updateArray.createNestedObject();
+    update["empresa"] = company_name;
+    update["area"] = area_name;
+    update["mac"] = _manager.id();
+    update["pcbname"] = name_card;
+    update["timestamp"] = _timestamp.getTime();
+    update["msg"] = msg;
 
     String jsonString;
     serializeJson(doc, jsonString);
@@ -482,12 +549,18 @@ void Access_Point()
     unsigned long buttonPressTime = millis();
     while (digitalRead(BOTON_COD_AZUL) == HIGH)
     {
-        //Serial.println("Access Point");
+        // Serial.println("Access Point");
         if (millis() - buttonPressTime > 2000)
         {
             use_led = true;
             led_flashing_lock_time = pdMS_TO_TICKS(100); // Indicar que está abierto el punto de acceso
             _BLS_AP.Access_Point(&server_status);
+            // Cuando el servidor Bluetooth se cierra, detener el parpadeo del LED
+            if (!server_status)
+            {
+                use_led = false;
+                led_flashing_lock_time = pdMS_TO_TICKS(500); // Restaurar frecuencia normal
+            }
             break;
         }
     }
@@ -539,7 +612,7 @@ void Sensors(void *pvParameters)
 
         input_energy = _Sensors.Input_Energy(&emergency);
 
-        if (input_energy == 0)
+        if (input_energy == '0')
             battery_level = _Sensors.Battery_Level(&emergency);
         else
             battery_level = 100;
@@ -586,6 +659,7 @@ void fcsDownloadCallback(FCS_DownloadStatusInfo info)
         Serial.printf("Downloaded %d%s, Elapsed time %d ms\n", (int)info.progress, "%", info.elapsedTime);
     else if (info.status == fb_esp_fcs_download_status_complete)
     {
+        client_mqtt.publish(topic_upd.c_str(), createJsonUpdate("Update firmware completed").c_str());
         Serial.println("Update firmware completed.");
         Serial.println();
         Serial.println("Restarting...\n\n");
@@ -593,6 +667,7 @@ void fcsDownloadCallback(FCS_DownloadStatusInfo info)
     }
     else if (info.status == fb_esp_fcs_download_status_error)
     {
+        client_mqtt.publish(topic_upd.c_str(), createJsonUpdate("Download firmware failed").c_str());
         Serial.printf("Download firmware failed, %s\n", info.errorMsg.c_str());
         Serial.println("Restarting...\n\n");
         ESP.restart();
@@ -674,7 +749,16 @@ void create_files()
         Serial.println("Card Mount Failed");
         return;
     }
-    
+
+    if (SPIFFS.exists("/data.csv"))
+        SPIFFS.remove("/data.csv"); // eliminar archivo data.csv al iniciar el sistema
+
+    // if (SPIFFS.exists(fileData))
+    //     SPIFFS.remove(fileData); // eliminar archivo data.csv al iniciar el sistema
+
+    // if (SPIFFS.exists("/read-cursor.tx"))
+    //     SPIFFS.remove("/read-cursor.tx"); // eliminar archivo data.csv al iniciar el sistema
+
     if (!SPIFFS.exists("/general_config.txt"))
     {
         File file_gen = SPIFFS.open("/general_config.txt", FILE_WRITE);
@@ -721,7 +805,7 @@ void create_files()
     if (!SPIFFS.exists("/pcb_name.txt"))
     {
         File file_name = SPIFFS.open("/pcb_name.txt", FILE_WRITE);
-        file_name.print("Monitoreo Neveras^                              ^^^\n"); // 50 caracteres de contenido (incluyendo nueva línea)
+        file_name.print("Biológicos Factores de Coagulación^             ^^^\n"); // 50 caracteres de contenido (incluyendo nueva línea)
         file_name.close();
         Serial.println("file pcb name create");
     }
@@ -731,6 +815,10 @@ void files_read()
 {
     _funciones_spiffs.Leer_Spiffs_name_card(name_card);
     _funciones_spiffs.Leer_Spiffs_sen(&publish_freq_num);
+
+    // Inicializar el timer con la frecuencia de publicación configurada
+    // Convertir milisegundos a microsegundos para el timer
+    setupPublishTimer(publish_freq_num * 1000);
 
     _funciones_spiffs.Leer_Spiffs_gen(datos_recibidos_gen.config_nombre_wifi, datos_recibidos_gen.config_clave_wifi, datos_recibidos_gen.configcompany_name, datos_recibidos_gen.configarea_name);
 
@@ -743,4 +831,38 @@ void files_read()
     topic_tro = "empresa/" + company_name + "/area/" + area_name + "/sensor/" + _manager.id().c_str() + "/trouble/down";
     topic_pub = "empresa/" + company_name + "/area/" + area_name + "/sensor/" + _manager.id().c_str() + "/down";
     topic_sub = "empresa/" + company_name + "/area/" + area_name + "/sensor/" + _manager.id().c_str() + "/up";
+}
+
+// Callback que se ejecutará cuando el timer se dispare
+void IRAM_ATTR onPublishTimer(void *arg)
+{
+    // timer_triggered = true;
+    completed_time = true; // Indica que se debe publicar los datos de sensores
+}
+
+// Función para inicializar el timer con el tiempo de publicación
+void setupPublishTimer(uint64_t interval_us)
+{
+    // Si el timer ya existe, elimínalo primero
+    if (publish_timer != NULL)
+    {
+        esp_timer_stop(publish_timer);
+        esp_timer_delete(publish_timer);
+        publish_timer = NULL;
+    }
+
+    // Configuración del timer
+    esp_timer_create_args_t timer_config = {
+        .callback = &onPublishTimer,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "publish_timer"};
+
+    // Crear el timer
+    ESP_ERROR_CHECK(esp_timer_create(&timer_config, &publish_timer));
+
+    // Iniciar el timer con el intervalo especificado (en microsegundos)
+    ESP_ERROR_CHECK(esp_timer_start_periodic(publish_timer, interval_us));
+
+    // Serial.printf("Timer configurado para %llu microsegundos\n", interval_us);
 }

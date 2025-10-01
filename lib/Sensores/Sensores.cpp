@@ -64,7 +64,7 @@ void Sensores::readData(DS18B20Data &envData)
     if (temperature >= values[4])
     temperature = mt2 * temperature - (mt2 * values[4]) + (values[1]);
     
-    dtostrf(temperature, 6, 2, envData.temperature);
+    dtostrf(temperature, 5, 2, envData.temperature);
 }
 
 void Sensores::Update_Notify()
@@ -74,7 +74,7 @@ void Sensores::Update_Notify()
     // _fire.send_notify(true, on, notification_message);
 }
 
-int Sensores::Input_Energy(bool *p_emergency)
+bool Sensores::Input_Energy(volatile bool *p_emergency)
 {
     state_energy = digitalRead(PIN_4_INPUT_ENERGY);
 
@@ -85,10 +85,11 @@ int Sensores::Input_Energy(bool *p_emergency)
 
     previous_state_energy = state_energy;
 
+    // Serial.println(state_energy ? "Energía ON" : "Energía OFF");
     return state_energy;
 }
 
-float Sensores::Battery_Level(bool *p_emergency)
+float Sensores::Battery_Level(volatile bool *p_emergency)
 {
     int sensorValue = analogRead(PIN_36_BATTERY_LEVEL);
 

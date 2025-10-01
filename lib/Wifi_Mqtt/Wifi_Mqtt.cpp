@@ -23,117 +23,45 @@ bool Wifi_Mqtt::verify_internet()
     }
 }
 
-void Wifi_Mqtt::resetConnectionParams() {
-    reconnectInterval = 1000;
-    wifiReconnectAttempts = 0;
-    mqttReconnectAttempts = 0;
-    Serial.println("Parámetros de reconexión restablecidos");
-}
-
 void Wifi_Mqtt::conectar_wifi(char *p_nombre_wifi, char *p_clave_wifi)
 {
-    // First connection attempt is special - we give it more time and attention
-    if (deviceJustStarted) {
-        Serial.print("Primer intento de conexión WiFi a: ");
+    WiFi.mode(WIFI_STA);
+
+    int intentos = 0;
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        Serial.print("Conectando a red wifi \n");
         Serial.println(p_nombre_wifi);
-        
-        if (WiFi.status() != WL_CONNECTED) {
-            WiFi.setHostname("HelpSmart");
-            WiFi.begin(p_nombre_wifi, p_clave_wifi);
-            
-            // Initial connection - we wait a bit longer
-            int intentos = 0;
-            connectionState = CONNECTING_WIFI;
-            
-            while (WiFi.status() != WL_CONNECTED && !server_status && intentos < 30) {
+        Serial.println(p_clave_wifi);
+        // WiFi.setHostname("Helpsmart");
+
+        // esp_wifi_set_max_tx_power(80); // Establecer la potencia máxima a 20 dBm
+        // WiFi.config(ip, gateway, subnet);  // Establecer conexión con una IP fija
+        WiFi.begin(p_nombre_wifi, p_clave_wifi);
+        Serial.println("Esperando conexión WiFi");
+
+        // while (WiFi.status() != WL_CONNECTED && !server_status)
+        // while (WiFi.status() != WL_CONNECTED)
+        while (WiFi.status() != WL_CONNECTED && !completed_time && !emergency)
+        {
+            if (!server_status)
                 use_led = false;
-                Serial.print('.');
-                delay(1000);
+                
+            Serial.print('.');
+            delay(1000);
+            if (intentos <= 10)
+            {
                 intentos++;
             }
-            
-            // If primary WiFi connection fails, try the default one
-            if (WiFi.status() != WL_CONNECTED) {
-                Serial.println("\nFallo en conexión primaria, intentando red predeterminada...");
-                WiFi.disconnect();
-                delay(100);
-                WiFi.begin(ssid_default, password_default);
-                
-                intentos = 0;
-                while (WiFi.status() != WL_CONNECTED && !server_status && intentos < 20) {
-                    use_led = false;
-                    Serial.print('-');
-                    delay(1000);
-                    intentos++;
-                }
-            }
-            
-            if (WiFi.status() == WL_CONNECTED) {
-                Serial.println("\nConexión WiFi establecida!");
-                Serial.print("Dirección IP: ");
-                Serial.println(WiFi.localIP());
-                connectionState = WIFI_CONNECTED;
-                wifiConnectedBefore = true;
-            } else {
-                Serial.println("\nFallo en ambas conexiones WiFi.");
-                connectionState = DISCONNECTED;
-            }
-            
-            deviceJustStarted = false;
-        }
-    } 
-    // Normal reconnection logic - non-blocking
-    else {
-        // Only try to reconnect if we're not currently in the middle of connecting
-        if (connectionState == DISCONNECTED && millis() - lastConnectionAttempt > reconnectInterval) {
-            Serial.print("Intento de reconexión WiFi a: ");
-            Serial.println(p_nombre_wifi);
-            
-            if (server_status == false) {
-                use_led = false;
-            }
-            
-            WiFi.disconnect();
-            delay(100);
-            WiFi.setHostname("Helpsmart");
-            
-            // Try primary WiFi first, unless we've had too many failed attempts
-            bool tryPrimary = wifiReconnectAttempts % 3 != 2; // Try default every 3rd attempt
-            
-            if (tryPrimary) {
+            else
+            {
+                Serial.println("Máximos intentos alcanzados, restableciendo WiFi...");
+                WiFi.disconnect(true);
                 WiFi.begin(p_nombre_wifi, p_clave_wifi);
-                Serial.println("Intentando red primaria");
-            } else {
-                WiFi.begin(ssid_default, password_default);
-                Serial.println("Intentando red predeterminada");
-            }
-            
-            lastConnectionAttempt = millis();
-            connectionState = CONNECTING_WIFI;
-            wifiReconnectAttempts++;
-            
-            // Implement exponential backoff for reconnection attempts
-            if (wifiReconnectAttempts > 1) {
-                reconnectInterval = min(reconnectInterval * 2, maxReconnectInterval);
-                Serial.printf("Próximo intento en %d ms\n", reconnectInterval);
-            }
-            
-            // After several attempts, consider a reset or alternative strategy
-            if (wifiReconnectAttempts >= maxReconnectAttempts) {
-                Serial.println("Múltiples intentos fallidos, reiniciando parámetros de conexión");
-                resetConnectionParams();
+                intentos = 0;
             }
         }
-        
-        // Check if we've connected
-        if (connectionState == CONNECTING_WIFI && WiFi.status() == WL_CONNECTED) {
-            Serial.println("WiFi conectado!");
-            Serial.print("IP: ");
-            Serial.println(WiFi.localIP());
-            connectionState = WIFI_CONNECTED;
-            wifiConnectedBefore = true;
-            resetConnectionParams(); // Reset backoff on successful connection
-        }
+        Serial.println(WiFi.localIP());
     }
 }
 
@@ -142,100 +70,82 @@ void Wifi_Mqtt::conectar_wifi(char *p_nombre_wifi, char *p_clave_wifi)
 //*****************************
 void Wifi_Mqtt::reconnect(char *p_nombre_wifi, char *p_clave_wifi)
 {
-    // Only attempt MQTT connection if WiFi is connected
-    if (WiFi.status() == WL_CONNECTED && !client_mqtt.connected()) {
-        
-        // Only try to connect at appropriate intervals
-        if (connectionState != CONNECTING_MQTT && millis() - lastConnectionAttempt > reconnectInterval) {
-            if (server_status == false) {
-                use_led = false;
-            }
-            
-            Serial.print("Intentando conexión MQTT al broker: ");
-            Serial.print(mqtt_server);
-            Serial.print(":");
-            Serial.println(mqtt_port);
-            
-            // Set the connection state before attempting
-            connectionState = CONNECTING_MQTT;
-            lastConnectionAttempt = millis();
-            
-            // Try to connect
-            if (client_mqtt.connect(_manager.id().c_str(), mqtt_user, mqtt_pass)) {
-                Serial.println("¡Conectado a MQTT!");
-                
-                // Subscribe to topics
-                if (client_mqtt.subscribe(topic_sub.c_str())) {
-                    Serial.print("Suscrito a: ");
-                    Serial.println(topic_sub);
-                } else {
-                    Serial.println("Error al suscribirse al tópico");
-                }
-                
-                connectionState = FULLY_CONNECTED;
-                resetConnectionParams(); // Reset backoff on successful connection
-            } else {
-                mqttReconnectAttempts++;
-                Serial.print("Fallo en conexión MQTT, rc=");
-                Serial.println(client_mqtt.state());
-                
-                // Verify internet connection - if we have WiFi but no internet, we should reconnect WiFi
-                if (!verify_internet()) {
-                    Serial.println("WiFi conectado, pero sin internet - desconectando WiFi");
-                    WiFi.disconnect();
-                    connectionState = DISCONNECTED;
-                    return;
-                }
-                
-                // Implement exponential backoff for reconnection attempts
-                if (mqttReconnectAttempts > 1) {
-                    reconnectInterval = min(reconnectInterval * 2, maxReconnectInterval);
-                    Serial.printf("Próximo intento MQTT en %d ms\n", reconnectInterval);
-                }
-                
-                // After several attempts, consider a reset
-                if (mqttReconnectAttempts >= maxReconnectAttempts) {
-                    Serial.println("Múltiples intentos MQTT fallidos, reiniciando parámetros de conexión");
-                    resetConnectionParams();
-                }
-            }
-        }
-    } else if (WiFi.status() != WL_CONNECTED) {
-        // If WiFi is disconnected but we were previously connected to MQTT,
-        // update the state accordingly
-        if (connectionState == FULLY_CONNECTED || connectionState == CONNECTING_MQTT) {
-            connectionState = DISCONNECTED;
-            Serial.println("Conexión WiFi perdida - necesita reconexión");
-        }
-    }
-}
+    static int reconnection_attempts = 0;
+    static unsigned long last_disconnect_time = 0;
+    unsigned long current_time = millis();
 
-// New consolidated connection management function
-bool Wifi_Mqtt::manage_connections(char *p_nombre_wifi, char *p_clave_wifi) {
-    // Check for WiFi connection
-    if (WiFi.status() != WL_CONNECTED) {
-        if (connectionState != DISCONNECTED && connectionState != CONNECTING_WIFI) {
-            Serial.println("WiFi desconectado. Cambiando estado.");
-            connectionState = DISCONNECTED;
-        }
-        conectar_wifi(p_nombre_wifi, p_clave_wifi);
-        return false;
-    } 
-    // WiFi connected, check MQTT
-    else if (!client_mqtt.connected()) {
-        if (connectionState != CONNECTING_MQTT && connectionState != WIFI_CONNECTED) {
-            connectionState = WIFI_CONNECTED;
-        }
-        reconnect(p_nombre_wifi, p_clave_wifi);
-        return false;
-    } 
-    
-    // Both WiFi and MQTT are connected
-    if (connectionState != FULLY_CONNECTED) {
-        Serial.println("Conexión completa establecida (WiFi + MQTT)");
-        connectionState = FULLY_CONNECTED;
-        resetConnectionParams();
+    // Si han pasado más de 30 segundos desde el último intento fallido, reiniciar el contador
+    if (current_time - last_disconnect_time > 30000)
+    {
+        reconnection_attempts = 0;
     }
-    
-    return true; // Both WiFi and MQTT connected
+
+    if (!client_mqtt.connected())
+    {
+        // Limitar la frecuencia de intentos de reconexión basado en intentos fallidos
+        if (reconnection_attempts > 0)
+        {
+            int delay_time = min(reconnection_attempts * 1000, 5000); // Máximo 5 segundos de retraso
+            if (current_time - last_disconnect_time < delay_time)
+            {
+                return; // No intentar reconectar demasiado rápido
+            }
+        }
+
+        Serial.print("Intentando conexion Mqtt...");
+
+        // Desconectar antes de intentar una nueva conexión para liberar recursos
+        client_mqtt.disconnect();
+        delay(100); // Un pequeño retraso para asegurar que la desconexión se completa
+
+        //  Intentamos conectar con un ID único usando timestamp
+        String clientId = _manager.id() + String(millis() % 1000);
+        if (client_mqtt.connect(clientId.c_str(), mqtt_user, mqtt_pass))
+        {
+            Serial.println("Conectado!");
+            reconnection_attempts = 0; // Resetear contador de intentos
+
+            // Nos suscribimos
+            if (client_mqtt.subscribe(topic_sub.c_str()))
+                Serial.println(topic_sub);
+            else
+                Serial.println("Error al suscribirse");
+        }
+        else
+        {
+            reconnection_attempts++;
+            last_disconnect_time = current_time;
+
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                if (verify_internet() == false)
+                {
+                    Serial.println("Conectado, pero sin internet");
+                    delay(1000);
+                    WiFi.disconnect();
+                    delay(500);
+                    WiFi.begin(p_nombre_wifi, p_clave_wifi);
+                }
+                Serial.print("fallo en la comunicacion con el servidor broker: ");
+                Serial.println(client_mqtt.state());
+
+                // Si hay demasiados errores de "No more processes", reiniciar WiFi
+                if (reconnection_attempts > 5)
+                {
+                    Serial.println("Demasiados intentos fallidos, reiniciando WiFi...");
+                    WiFi.disconnect(true);
+                    delay(1000);
+                    WiFi.begin(p_nombre_wifi, p_clave_wifi);
+                    delay(2000);
+                }
+            }
+            else
+            {
+                Serial.println("fallo del wifi");
+                Serial.println("Reconectar WiFi");
+                reconnection_attempts = 0; // Resetear para WiFi
+                conectar_wifi(p_nombre_wifi, p_clave_wifi);
+            }
+        }
+    }
 }

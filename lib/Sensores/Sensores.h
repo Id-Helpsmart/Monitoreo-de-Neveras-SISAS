@@ -5,7 +5,6 @@
 
 #include "DS18B20HS.h"
 #include "funciones_spiffs.h"
-#include "funciones_firebase.h"
 
 #define PIN_4_INPUT_ENERGY 4    //  conector para medición pin GPIO4
 #define PIN_36_BATTERY_LEVEL 36 // este pin aparece indicado en el esquema de ESP32 como SEN_VP
@@ -40,8 +39,8 @@ public:
     void Setup_Sen();
     void Update_Notify();
     void readData(DS18B20Data &envData);
-    int Input_Energy(bool *p_emergency);
-    float Battery_Level(bool *p_emergency);
+    bool Input_Energy(volatile bool *p_emergency);
+    float Battery_Level(volatile bool *p_emergency);
 };
 
 #endif
